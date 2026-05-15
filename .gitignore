@@ -1,4 +1,6 @@
 # Logs
+.devcodex/
+
 logs
 *.log
 npm-debug.log*

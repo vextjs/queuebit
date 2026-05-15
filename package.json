@@ -1,0 +1,25 @@
+{
+    "name": "queuebit",
+    "version": "0.0.1",
+    "description": "Initial npm package scaffold for Queuebit.",
+    "license": "MIT",
+    "author": "VextJS",
+    "repository": {
+        "type": "git",
+        "url": "git+https://github.com/vextjs/queuebit.git"
+    },
+    "bugs": {
+        "url": "https://github.com/vextjs/queuebit/issues"
+    },
+    "homepage": "https://github.com/vextjs/queuebit#readme",
+    "keywords": [
+        "queue",
+        "jobs",
+        "task-queue",
+        "vextjs"
+    ],
+    "files": [
+        "README.md",
+        "LICENSE"
+    ]
+}
