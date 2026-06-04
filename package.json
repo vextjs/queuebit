@@ -1,8 +1,8 @@
 {
     "name": "queuebit",
-    "version": "0.0.2",
+    "version": "0.0.3",
     "description": "Initial npm package scaffold for Queuebit.",
-    "license": "MIT",
+    "license": "Apache-2.0",
     "author": "VextJS",
     "repository": {
         "type": "git",
