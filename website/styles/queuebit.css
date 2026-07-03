@@ -1,0 +1,40 @@
+:root {
+  --qb-ink: #11201b;
+  --qb-muted: #5a6b62;
+  --qb-leaf: #1e7f57;
+  --qb-mint: #ccf3df;
+  --qb-amber: #f6c35b;
+  --qb-panel: rgba(255, 255, 255, 0.82);
+}
+
+.rspress-home-hero {
+  background:
+    radial-gradient(circle at 18% 20%, rgba(204, 243, 223, 0.85), transparent 30%),
+    radial-gradient(circle at 80% 12%, rgba(246, 195, 91, 0.28), transparent 28%),
+    linear-gradient(135deg, #f7fff8 0%, #eef8f2 45%, #fff8e4 100%);
+}
+
+.rspress-home-hero .rspress-home-hero-title {
+  letter-spacing: -0.04em;
+}
+
+.rspress-doc h2 {
+  letter-spacing: -0.015em;
+}
+
+.rspress-doc blockquote {
+  border-left-color: var(--qb-leaf);
+  background: rgba(204, 243, 223, 0.28);
+  color: var(--qb-ink);
+}
+
+.manual-label {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 999px;
+  padding: 4px 10px;
+  background: rgba(30, 127, 87, 0.14);
+  color: var(--qb-leaf);
+  font-size: 0.85em;
+  font-weight: 700;
+}
