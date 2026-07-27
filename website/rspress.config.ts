@@ -181,7 +181,7 @@ export default defineConfig({
       {
         icon: 'github',
         mode: 'link',
-        content: 'https://github.com/vextjs/queuebit'
+        content: 'https://github.com/devcodex-labs/queuebit'
       }
     ],
     footer: {

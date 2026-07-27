@@ -30,12 +30,12 @@
     },
     "repository": {
         "type": "git",
-        "url": "git+https://github.com/vextjs/queuebit.git"
+        "url": "git+https://github.com/devcodex-labs/queuebit.git"
     },
     "bugs": {
-        "url": "https://github.com/vextjs/queuebit/issues"
+        "url": "https://github.com/devcodex-labs/queuebit/issues"
     },
-    "homepage": "https://github.com/vextjs/queuebit#readme",
+    "homepage": "https://github.com/devcodex-labs/queuebit#readme",
     "scripts": {
         "build": "tsup",
         "typecheck": "tsc --noEmit",

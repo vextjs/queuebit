@@ -47,24 +47,24 @@ npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime
 
 The bilingual user manual lives in `docs/v01`:
 
-- [Quick start](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/quick-start.md)
-- [Run one background job](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/job-recipes.md)
-- [Process many database records](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/batch-runs.md)
-- [Configure Redis and Workers](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/configuration-recipes.md)
-- [Production deployment](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/production-deployment.md)
-- [Failure runbooks](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/failure-runbooks.md)
-- [中文用户手册](https://github.com/vextjs/queuebit/blob/main/docs/v01/zh/index.md)
+- [Quick start](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/quick-start.md)
+- [Run one background job](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/job-recipes.md)
+- [Process many database records](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/batch-runs.md)
+- [Configure Redis and Workers](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/configuration-recipes.md)
+- [Production deployment](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/production-deployment.md)
+- [Failure runbooks](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/failure-runbooks.md)
+- [中文用户手册](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/zh/index.md)
 
 ## Choose a Path
 
 | Goal | Start here |
 |---|---|
-| Run the first background task | [Quick start](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/quick-start.md) |
-| Add retry, timeout, delay, or duplicate protection | [Run one background job](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/job-recipes.md) |
-| Page many database records into jobs | [Process many database records](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/batch-runs.md) |
-| Integrate with vext | [vext integration](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/vext-integration.md) |
-| Prepare production Redis and Workers | [Configure Redis and Workers](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/configuration-recipes.md) |
-| Recover an incident | [Failure runbooks](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/failure-runbooks.md) |
+| Run the first background task | [Quick start](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/quick-start.md) |
+| Add retry, timeout, delay, or duplicate protection | [Run one background job](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/job-recipes.md) |
+| Page many database records into jobs | [Process many database records](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/batch-runs.md) |
+| Integrate with vext | [vext integration](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/vext-integration.md) |
+| Prepare production Redis and Workers | [Configure Redis and Workers](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/configuration-recipes.md) |
+| Recover an incident | [Failure runbooks](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/failure-runbooks.md) |
 
 ## Compatibility
 
