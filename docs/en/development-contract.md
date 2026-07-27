@@ -1,6 +1,12 @@
 # Development Guardrails
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Purpose
+
+<span class="manual-label">Maintainer / Internals</span>
 
 This page answers one question: how development should stay aligned with the final user manual.
 
@@ -50,6 +56,19 @@ Before implementation work starts, check:
 - Public API, CLI, config field, or Redis key naming changes must update README, reference, quick start, and relevant manual pages.
 - Do not finish with only the Chinese page updated; English must stay in sync.
 - Do not put DevCodex reports, internal ledgers, or maintainer checklists in the public user path.
+
+## Run the documentation site locally
+
+From the repository root:
+
+```bash
+npm install --prefix website
+npm run docs:dev
+npm run docs:build
+npm run docs:preview
+```
+
+You can also work inside `website/` with `npm run dev`, `npm run build`, and `npm run preview`. The root package only proxies scripts; `website/` owns documentation dependencies.
 
 ## Acceptance route
 

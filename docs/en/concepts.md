@@ -1,5 +1,9 @@
 # Core Concepts
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Concept overview
 
 queuebit's model is built around shared state in Redis. Even though vext is the first integration target, the core model should not depend on a `vext app` object, HTTP worker count, or framework lifecycle.

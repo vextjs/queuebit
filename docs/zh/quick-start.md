@@ -1,170 +1,148 @@
 # 快速开始
 
-## 目标
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
 
-<span class="manual-label">v0.1 final user manual</span>
+## 5 分钟目标
 
-本页是 queuebit v0.1 的第一次接入路径。按这里操作后，你会从业务数据源取出一批待处理对象，批量提交 jobs，由 worker 消费，由 scheduler 推进延迟/重试/恢复，并能查看队列状态。
+<span class="manual-label">首次成功路径</span>
 
-如果你使用 vext，先看本页理解 queuebit 三角色，再进入 [vext 接入](./vext-integration.md)。
+本页只做一件事：从一个明确的数据文件读取两条订单，用 `Queue.addBulk` 批量入队，再由 Worker 写入本地 `outbox.log`。完成后，你能确认 Redis、Producer、Worker 和查询入口都已连通。
 
-## 最短跑通路径
-
-第一次不要先研究所有配置，先按这个顺序跑通：
-
-```text
-1. 启动 Redis
-2. 写 queuebit.config.ts
-3. 从业务数据库/API/事件中取出待处理数据
-4. 把数据整理成 job payload，并批量提交 Queue.addBulk
-5. 在第二个进程启动 Worker
-6. 在第三个进程启动 Scheduler
-7. 用 inspect 看 waiting / active / delayed / failed
-```
+这里的 handler 只是本地验证夹具，不代表生产通知实现。生产环境应把写文件替换为邮件、推送、同步或文件生成服务，并继续阅读 [生产部署](./production-deployment.md)。
 
 ```mermaid
-flowchart TD
-  Start["准备 Redis"] --> Config["写 queuebit.config.ts"]
-  Config --> Source["读取业务数据源<br/>DB / API / event"]
-  Source --> Payload["生成 job payload<br/>稳定 ID + 渲染参数"]
-  Payload --> Producer["批量提交 jobs<br/>Queue.addBulk"]
-  Producer --> Worker["启动 Worker<br/>逐个执行 handler"]
-  Producer --> Scheduler["启动 Scheduler<br/>推进 delayed / retry / stalled"]
-  Worker --> Inspect["inspect queue / workers / scheduler"]
-  Scheduler --> Inspect
-  Inspect --> Done{"这一批 jobs 是否 completed?"}
-  Done -- "是" --> Success["第一次成功"]
-  Done -- "否" --> Triage["按常见错误表排查"]
+flowchart LR
+  Source["orders.json<br/>本地数据源"] --> Producer["producer.mjs<br/>addBulk"]
+  Producer --> Redis["Redis<br/>notification queue"]
+  Redis --> Worker["worker.mjs<br/>处理 job"]
+  Worker --> Result["outbox.log<br/>可见结果"]
+  Redis --> Inspect["queuebit inspect<br/>completed"]
 ```
-
-节点说明：
-
-| 节点 | 判断标准 |
-|------|----------|
-| 准备 Redis | `redis://127.0.0.1:6379` 可连接 |
-| 写配置 | `connection`、`namespace`、`queues.notification.scheduler.domain` 已填写 |
-| 读取业务数据源 | 能从你的业务数据库、API、事件或文件中拿到待处理对象 |
-| 生成 payload | 每个 job 有稳定业务 ID、接收人、通知模板和幂等键 |
-| 批量提交 jobs | `Queue.addBulk` 返回这一批 job ids |
-| 启动 Worker | `inspect workers` 能看到 worker identity |
-| 启动 Scheduler | `inspect scheduler` 能看到 active scheduler |
-| inspect | 能区分这一批 jobs 是 waiting、active、delayed、retrying 还是 failed |
 
 ## 前置条件
 
-| 项 | 要求 | 说明 |
-|----|------|------|
-| Node.js | `>= 20` | 使用当前 LTS 线，便于稳定支持 ESM、AbortSignal 和现代 TypeScript 工具链 |
-| Redis | `>= 7.0` standalone 或托管单主 Redis | v0.1 只接入 Redis；Redis Cluster 默认不支持 |
-| TypeScript | 推荐 `>= 5.4` | JavaScript 也可用；TypeScript 项目获得完整类型提示 |
-| 进程拓扑 | Web/API、worker、scheduler 显式拆分 | 本地演示可以单机多终端，生产不建议 Web 隐式承担 worker |
+- Node.js `>= 20`
+- Redis `>= 7.0`，standalone 或单主 Redis
+- 一个空目录
 
-## 安装
+Redis Cluster 在 v0.1 不支持。环境不确定时先看 [运行环境与兼容边界](./compatibility.md)。
+
+## 1. 安装并启动 Redis
 
 ```bash
 npm install queuebit
-```
-
-准备一个本地 Redis：
-
-```bash
 docker run --name queuebit-redis -p 6379:6379 redis:7
 ```
 
-新建最小配置文件 `queuebit.config.ts`：
+如果本机已经有 Redis，只要 `redis://127.0.0.1:6379` 可连接，就不需要再次启动容器。
 
-```ts
+## 2. 写最小配置
+
+新建 `queuebit.config.mjs`：
+
+```js
 import { defineQueuebitConfig } from 'queuebit';
 
 export default defineQueuebitConfig({
   connection: { url: 'redis://127.0.0.1:6379' },
   namespace: 'dev:billing',
   queues: {
-    notification: {
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delayMs: 1000 }
-      },
-      worker: {
-        concurrency: 4,
-        leaseMs: 30000,
-        renewIntervalMs: 10000,
-        drainTimeoutMs: 30000
-      },
-      scheduler: {
-        domain: 'billing-notification'
-      }
-    }
-  },
-  metrics: { enabled: true }
+    notification: {}
+  }
 });
 ```
 
-配置字段怎么理解：
+首次运行只需要理解三个值：
 
-| 字段 | 你从哪里取值 | 第一次怎么选 |
-|------|--------------|--------------|
-| `connection.url` | Redis 连接地址 | 本地用 `redis://127.0.0.1:6379`，生产用你的托管 Redis 地址 |
-| `namespace` | 环境 + 应用名 | 用 `dev:billing`、`prod:billing` 这类稳定前缀隔离 keyspace |
-| `queues.notification` | 业务队列名 | 按业务动作命名，例如 `notification`、`email`、`invoice` |
-| `attempts` | 业务允许重试次数 | 通知/邮件类通常先用 `3`，不要默认无限重试 |
-| `backoff` | 下游服务恢复速度 | 下游偶发失败用指数退避；固定间隔适合本地演示 |
-| `worker.concurrency` | handler 和下游承载能力 | 先从 `4` 或更小开始，观察外部服务限流后再调大 |
-| `leaseMs` / `renewIntervalMs` | 单个 job 正常耗时 | `renewIntervalMs` 必须小于 `leaseMs`；长任务要调大 lease 或拆小任务 |
-| `scheduler.domain` | 同一组 scheduler 的单活范围 | 同一业务域使用同一个稳定 domain，避免多个 scheduler 同时推进 |
+| 值 | 含义 |
+|---|---|
+| `connection.url` | Redis 地址 |
+| `namespace` | 当前应用在 Redis 中的隔离前缀 |
+| `notification` | 业务队列名；Producer 和 Worker 必须一致 |
 
-## 从业务数据源批量提交 jobs
+认证、TLS、Sentinel、重试、租约和 Scheduler 都属于生产配置，本页先不展开。
 
-queuebit 不会凭空获取用户数据，也不应该把示例写成硬编码单用户。真实流程是：你的业务系统先查询待处理数据，再把每条数据整理成一个 job payload。
+## 3. 准备一批业务数据
 
-下面以“给已支付订单批量发送通知”为例。数据来源可以是你的数据库、内部 API、事件流或导入文件；queuebit 只负责把这些业务数据异步排队和可靠执行。
+新建 `orders.json`：
 
-```ts
+```json
+[
+  {
+    "id": "order-1001",
+    "userId": "user-42",
+    "email": "ada@example.com",
+    "orderNo": "NO-1001",
+    "amountText": "¥128.00"
+  },
+  {
+    "id": "order-1002",
+    "userId": "user-77",
+    "email": "lin@example.com",
+    "orderNo": "NO-1002",
+    "amountText": "¥86.00"
+  }
+]
+```
+
+这就是首次运行的数据来源。queuebit 不会替你查询用户或凭空生成接收人；生产项目应把这一步替换为数据库查询、内部 API、事件流或导入文件。
+
+## 4. 启动 Worker
+
+新建 `worker.mjs`：
+
+```js
+import { appendFile } from 'node:fs/promises';
+import { Worker } from 'queuebit';
+
+const connection = { url: 'redis://127.0.0.1:6379' };
+const namespace = 'dev:billing';
+
+const worker = new Worker('notification', async (job) => {
+  await appendFile(
+    'outbox.log',
+    `${JSON.stringify({
+      jobId: job.id,
+      orderId: job.data.orderId,
+      recipient: job.data.recipient,
+      templateId: job.data.templateId
+    })}\n`
+  );
+}, {
+  connection,
+  namespace
+});
+
+await worker.run();
+```
+
+在终端 A 运行：
+
+```bash
+node worker.mjs
+```
+
+Worker 是执行任务的进程。它会持续等待新 job，因此终端保持运行是正常现象。
+
+## 5. 批量提交 jobs
+
+新建 `producer.mjs`：
+
+```js
+import { readFile } from 'node:fs/promises';
 import { Queue } from 'queuebit';
-import { db } from './db';
 
-const notificationQueue = new Queue('notification', {
+const orders = JSON.parse(await readFile('orders.json', 'utf8'));
+
+const queue = new Queue('notification', {
   connection: { url: 'redis://127.0.0.1:6379' },
   namespace: 'dev:billing'
 });
 
-type ReceiptNotificationJob = {
-  orderId: string;
-  userId: string;
-  channel: 'email' | 'push';
-  recipient: string;
-  templateId: 'receipt-paid';
-  variables: {
-    orderNo: string;
-    amountText: string;
-  };
-};
-
-const pendingReceipts = await db.orders.findMany({
-  where: {
-    paid: true,
-    receiptNotificationQueuedAt: null
-  },
-  include: {
-    user: {
-      select: {
-        id: true,
-        email: true,
-        pushToken: true,
-        preferredChannel: true
-      }
-    }
-  },
-  take: 100
-});
-
-const jobs = pendingReceipts.flatMap((order) => {
-  const wantsPush = order.user.preferredChannel === 'push' && Boolean(order.user.pushToken);
-  const channel = wantsPush ? 'push' : 'email';
-  const recipient = wantsPush ? order.user.pushToken : order.user.email;
-
-  if (!recipient) {
-    // 没有可用接收地址时不要凭空构造 job，先让业务数据回到待补全状态。
+const jobs = orders.flatMap((order) => {
+  if (!order.email) {
     return [];
   }
 
@@ -172,60 +150,8 @@ const jobs = pendingReceipts.flatMap((order) => {
     name: 'send-receipt-notification',
     data: {
       orderId: order.id,
-      userId: order.user.id,
-      channel,
-      recipient,
-      templateId: 'receipt-paid',
-      variables: {
-        orderNo: order.orderNo,
-        amountText: order.amountText
-      }
-    } satisfies ReceiptNotificationJob,
-    opts: {
-      idempotencyKey: `receipt:${order.id}`,
-      attempts: 3,
-      backoff: { type: 'exponential', delayMs: 1000 }
-    }
-  }];
-});
-
-if (jobs.length > 0) {
-  const createdJobs = await notificationQueue.addBulk(jobs);
-  const queuedOrderIds = jobs.map((job) => job.data.orderId);
-
-  await db.orders.updateMany({
-    where: { id: { in: queuedOrderIds } },
-    data: { receiptNotificationQueuedAt: new Date() }
-  });
-
-  console.log(createdJobs.map((job) => job.id));
-}
-```
-
-这里有三个关键点：
-
-| 问题 | 正确做法 |
-|------|----------|
-| 用户数据从哪里来 | 从你的业务 DB/API/event/file 来；queuebit 只接收你提交的 payload |
-| 是否只能提交一个 job | 不是。队列主路径应支持批量提交，`addBulk` 用来一次提交一批 jobs |
-| 推送信息从哪里来 | 从用户资料、通知偏好、设备 token、模板系统或业务订单中取值；缺失时不要造假，先跳过或回写待补全状态 |
-| payload 应放什么 | 放稳定 ID、接收人、模板 ID 和必要变量；不要把不可控的大对象随便塞进 Redis |
-
-如果某些通知要延迟发送，可以在批量 jobs 中给对应项设置 `delayMs`：
-
-```ts
-const delayedJobs = pendingReceipts.flatMap((order) => {
-  if (!order.user.email) {
-    return [];
-  }
-
-  return [{
-    name: 'send-receipt-reminder',
-    data: {
-      orderId: order.id,
-      userId: order.user.id,
-      channel: 'email',
-      recipient: order.user.email,
+      userId: order.userId,
+      recipient: order.email,
       templateId: 'receipt-paid',
       variables: {
         orderNo: order.orderNo,
@@ -233,178 +159,64 @@ const delayedJobs = pendingReceipts.flatMap((order) => {
       }
     },
     opts: {
-      idempotencyKey: `receipt-reminder:${order.id}`,
-      delayMs: 15 * 60 * 1000
+      idempotencyKey: `receipt:${order.id}`
     }
   }];
 });
 
-if (delayedJobs.length > 0) {
-  await notificationQueue.addBulk(delayedJobs);
-}
+const createdJobs = await queue.addBulk(jobs);
+console.log('queued job ids:', createdJobs.map((job) => job.id));
+await queue.close();
 ```
 
-## 启动 Worker
-
-Worker 应该作为独立进程运行。它负责 claim job、续租、执行 handler、ack/fail 和 drain。
-
-生产项目建议把 `ReceiptNotificationJob` 这类 payload 类型放在 `src/jobs/receipt-notification.ts`，producer 和 worker 共同引用，避免两边字段漂移。
-
-```ts
-import { Worker } from 'queuebit';
-
-const worker = new Worker(
-  'notification',
-  async (job) => {
-    if (job.name !== 'send-receipt-notification') {
-      throw new Error(`Unknown job: ${job.name}`);
-    }
-
-    const data = job.data as ReceiptNotificationJob;
-
-    const user = await db.users.findUnique({ where: { id: data.userId } });
-    const order = await db.orders.findUnique({ where: { id: data.orderId } });
-
-    if (!user || !order) {
-      throw new Error(`Missing user or order for job ${job.id}`);
-    }
-
-    const message = await renderNotificationTemplate(data.templateId, {
-      ...data.variables,
-      userName: user.name
-    });
-
-    if (data.channel === 'email') {
-      await emailProvider.send({
-        to: data.recipient,
-        subject: message.subject,
-        html: message.html
-      });
-      return;
-    }
-
-    await pushProvider.send({
-      token: data.recipient,
-      title: message.title,
-      body: message.body
-    });
-  },
-  {
-    connection: { url: 'redis://127.0.0.1:6379' },
-    namespace: 'dev:billing',
-    concurrency: 4,
-    leaseMs: 30000,
-    renewIntervalMs: 10000,
-    drainTimeoutMs: 30000
-  }
-);
-
-await worker.run();
-```
-
-CLI 入口等价写法：
+在终端 B 运行：
 
 ```bash
-queuebit worker start --config queuebit.config.ts --queue notification
+node producer.mjs
 ```
 
-## 启动 Scheduler
+这里使用 `addBulk`，因为一批业务对象应映射为一批 jobs。没有邮箱的订单会被跳过，而不是伪造接收人。
 
-Scheduler 推进 delayed、retry 和 stalled recovery。生产环境建议独立运行 scheduler 进程；同一 `scheduler.domain` 可以有多个候选实例，但同一时刻只能一个 active。
+## 6. 确认成功
 
-```ts
-import { Scheduler } from 'queuebit';
-
-const scheduler = new Scheduler({
-  connection: { url: 'redis://127.0.0.1:6379' },
-  namespace: 'dev:billing',
-  queues: ['notification'],
-  domain: 'billing-notification'
-});
-
-await scheduler.run();
-```
-
-CLI 入口等价写法：
+先查看 handler 结果：
 
 ```bash
-queuebit scheduler start --config queuebit.config.ts --domain billing-notification
+cat outbox.log
 ```
 
-## 查看队列状态
+应该看到两行 JSON，分别包含 `order-1001` 和 `order-1002`。再查看队列：
 
 ```bash
-queuebit inspect queue notification --config queuebit.config.ts
-queuebit inspect workers --queue notification --config queuebit.config.ts
-queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts
+npx queuebit inspect queue notification --config queuebit.config.mjs
 ```
 
-最小输出需要让用户看到：
+成功标准：
 
-| 指标 | 用途 |
-|------|------|
-| `waiting` | 有多少 job 等待 worker claim |
-| `active` | 有多少 job 正在处理 |
-| `delayed` | 有多少 job 等待 scheduler 到期推进 |
-| `retrying` | 有多少 job 失败后等待下一次 attempt |
-| `failed` | 有多少 job 已终止失败 |
-| `stalledRecoveries` | 近期发生了多少次 stalled recovery |
-| `activeWorkers` | 哪些 worker 正在心跳 |
-| `activeScheduler` | 当前 active scheduler identity |
+- Producer 输出两个 job id。
+- `outbox.log` 出现两条结果。
+- `waiting` 和 `active` 最终回到 `0`。
+- `completed` 至少增加 `2`。
 
-## 优雅关闭
+## 为什么这里没有 Scheduler
 
-Worker 收到关闭信号时应停止拉新，并等待 active jobs 在窗口内完成。
+这批 jobs 立即执行且不需要重试，所以首次成功不依赖 Scheduler。生产环境中，Scheduler 负责推进 delayed、retry 和 stalled recovery；在验证最小闭环后，应按 [生产部署](./production-deployment.md) 启动独立 Scheduler。
 
-```ts
-async function shutdown() {
-  await worker.close({ drain: true, timeoutMs: 30000 });
-  await scheduler.close();
-  await notificationQueue.close();
-}
+## 第一次失败怎么查
 
-process.once('SIGTERM', shutdown);
-process.once('SIGINT', shutdown);
-```
+| 现象 | 先检查 | 处理 |
+|---|---|---|
+| Producer 连接失败 | Redis 是否运行、端口是否为 `6379` | 修正 `connection.url` |
+| job 一直 waiting | 终端 A 是否仍在运行；queue/namespace 是否一致 | 重启 Worker，核对三个最小值 |
+| `outbox.log` 不存在 | Worker 是否报错、当前目录是否可写 | 查看 Worker stderr，修复文件权限 |
+| job 执行两次 | at-least-once 可能重投递 | 在真实 handler 中使用业务幂等键 |
+| inspect 找不到队列 | config 路径或 namespace 不一致 | 使用本页的 `queuebit.config.mjs` |
 
-Drain 超时不代表 job 成功；未完成 job 会按 lease / stalled recovery 规则恢复。
-
-## 生产拓扑
-
-```text
-web/api process      -> Queue.addBulk(...)
-worker process       -> Worker.run()
-scheduler process    -> Scheduler.run()
-redis                -> queue state, leases, delayed, retry, recovery
-```
-
-| 角色 | 推荐数量 | 注意事项 |
-|------|----------|----------|
-| Web/API producer | 按业务服务水平扩缩容 | 不隐式启动 worker 或 scheduler |
-| Worker | 按吞吐与外部依赖能力扩缩容 | `concurrency` 从小值开始，handler 必须幂等 |
-| Scheduler | 可多候选，单 domain 仅一个 active | 不处理业务 handler |
-| Redis | 单主 Redis 或托管单主 Redis | Redis Cluster v0.1 默认 fail fast |
-
-## 常见错误
-
-第一次失败时，不要直接看 Redis key。先按这个顺序判断：
-
-1. `queuebit inspect queue notification --config queuebit.config.ts`：确认 jobs 在哪里。
-2. `queuebit inspect workers --queue notification --config queuebit.config.ts`：确认有没有 worker。
-3. `queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts`：确认 delayed / retry 谁在推进。
-4. 再看 handler 日志和业务幂等。
-
-| 现象 | 常见原因 | 处理 |
-|------|----------|------|
-| job 一直 waiting | worker 未启动、queue/namespace 不一致、worker 正在 drain | 运行 `queuebit inspect workers`，核对配置 |
-| delayed 到期后没执行 | scheduler 未启动或 domain 不一致 | 运行 `queuebit inspect scheduler` |
-| job 重复执行 | at-least-once 下 ack 丢失、worker crash 或 lease 过期 | 用 `idempotencyKey` 和业务幂等保护 |
-| worker 启动即失败 | Redis 不可连接、lease 参数不合法、Redis Cluster 未支持 | 先修配置，参考 [CLI 与配置](./cli-and-config.md) |
-| drain 后仍有 active | handler 太慢、外部依赖卡住、drainTimeout 太短 | 拆小任务或调整 timeout / lease |
+更多排查方法见 [运维与排查](./operations.md)。
 
 ## 下一步
 
-- 接入 vext 项目：继续读 [vext 接入](./vext-integration.md)。
-- 调整配置：继续读 [CLI 与配置](./cli-and-config.md)。
-- 理解 Redis 与分布式恢复：继续读 [Redis-only 与分布式恢复](./distributed-semantics.md)。
-- 排查线上问题：继续读 [运维与排查](./operations.md)。
+- 准备生产环境：[生产部署](./production-deployment.md)
+- 接入 vext：[vext 接入](./vext-integration.md)
+- 查询全部字段和命令：[CLI 与配置](./cli-and-config.md)
+- 理解重复投递：[故障模式与恢复](./failure-modes.md)

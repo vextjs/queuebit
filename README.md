@@ -1,28 +1,18 @@
 # queuebit
 
-queuebit is a Redis-only distributed job queue for Node.js and vext projects.
+Queuebit is a Redis-backed background job queue for Node.js and vext projects.
 
-This README is the v0.1 final user manual target: future implementation should make the examples, CLI commands, configuration, vext adapter, and operations behavior below work as written.
+The basic flow is small:
 
-## Table of Contents
+1. Install `queuebit`.
+2. Pass Redis configuration.
+3. Register a processor.
+4. Call `jobs.add()` from your Web/API code.
+5. Run one or more Workers.
 
-- [Documentation](#documentation)
-- [Install](#install)
-- [Quick Start](#quick-start)
-- [vext Integration](#vext-integration)
-- [Configuration and CLI](#configuration-and-cli)
-- [Operations](#operations)
-- [Scope](#scope)
-- [Local Documentation Development](#local-documentation-development)
-- [License](#license)
+Use BatchRun only when you need to page many database records, create jobs from each page, record batch/final results, and recover progress after failures.
 
-## Documentation
-
-The full user manual is built as a standalone Rspress site:
-
-- Chinese docs: [docs/zh](https://github.com/vextjs/queuebit/blob/main/docs/zh/index.md)
-- English docs: [docs/en](https://github.com/vextjs/queuebit/blob/main/docs/en/index.md)
-- Local docs commands: `npm run docs:dev`, `npm run docs:build`, `npm run docs:preview`
+> Release status: the current package is pre-v0.1. The `docs/v01` site is the confirmed user contract for the planned v0.1 runtime. Some full examples are still target contracts until release evidence closes.
 
 ## Install
 
@@ -30,189 +20,106 @@ The full user manual is built as a standalone Rspress site:
 npm install queuebit
 ```
 
-queuebit v0.1 expects Node.js `>= 20` and Redis `>= 7.0`. Redis standalone or managed single-primary Redis is the baseline; Redis Cluster is not supported in v0.1.
-
-## Quick Start
+## First Job
 
 ```ts
-import { Queue, Worker, Scheduler } from 'queuebit';
+import { createQueuebitClient } from 'queuebit';
+import config from './queuebit.config.js';
 
-const connection = { url: 'redis://127.0.0.1:6379' };
-const namespace = 'dev:billing';
+const queuebit = await createQueuebitClient({ config });
 
-const notificationQueue = new Queue('notification', { connection, namespace });
+const job = await queuebit.jobs.add(
+  'notification',
+  'send-receipt',
+  { orderId, tenantId, recipient }
+);
 
-const paidOrders = await orders.findPaidOrdersNeedingReceipt({ limit: 100 });
-
-const jobs = paidOrders.flatMap((order) => {
-  const wantsPush = order.user.preferredChannel === 'push' && order.user.pushToken;
-  const channel = wantsPush ? 'push' : 'email';
-  const recipient = wantsPush ? order.user.pushToken : order.user.email;
-
-  if (!recipient) {
-    return [];
-  }
-
-  return [{
-    name: 'send-receipt-notification',
-    data: {
-      orderId: order.id,
-      userId: order.user.id,
-      channel,
-      recipient,
-      templateId: 'receipt-paid',
-      variables: {
-        orderNo: order.orderNo,
-        amountText: order.amountText
-      }
-    },
-    opts: {
-      idempotencyKey: `receipt:${order.id}`,
-      attempts: 3,
-      backoff: { type: 'exponential', delayMs: 1000 }
-    }
-  }];
-});
-
-await notificationQueue.addBulk(jobs);
-
-const worker = new Worker('notification', async (job) => {
-  if (job.data.channel === 'email') {
-    await emailProvider.sendReceipt(job.data);
-    return;
-  }
-
-  await pushProvider.sendReceipt(job.data);
-}, {
-  connection,
-  namespace,
-  concurrency: 4,
-  leaseMs: 30000,
-  renewIntervalMs: 10000,
-  drainTimeoutMs: 30000
-});
-
-const scheduler = new Scheduler({
-  connection,
-  namespace,
-  queues: ['notification'],
-  domain: 'billing-notification'
-});
-
-await Promise.all([worker.run(), scheduler.run()]);
+return { jobId: job.id, state: job.state };
 ```
 
-queuebit does not fetch users or notification recipients by itself. Your app reads business data from a database, API, event stream, or import file, then submits prepared job payloads to queuebit.
-
-Worker and scheduler should run as explicit processes in production:
+Run the Worker separately:
 
 ```bash
-queuebit worker start --config queuebit.config.ts --queue notification
-queuebit scheduler start --config queuebit.config.ts --domain billing-notification
+npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification
 ```
 
-## vext Integration
+## Documentation
 
-```ts
-import { defineConfig } from 'vext';
-import { queuebit } from 'queuebit/vext';
+The bilingual user manual lives in `docs/v01`:
 
-export default defineConfig({
-  plugins: [
-    queuebit({
-      connection: { url: 'redis://127.0.0.1:6379' },
-      namespace: 'prod:billing',
-      queues: {
-        notification: {
-          defaultJobOptions: {
-            attempts: 3,
-            backoff: { type: 'exponential', delayMs: 1000 }
-          }
-        }
-      },
-      producer: { enabled: true },
-      worker: { enabled: false },
-      scheduler: { enabled: false }
-    })
-  ]
-});
-```
+- [Quick start](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/quick-start.md)
+- [Run one background job](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/job-recipes.md)
+- [Process many database records](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/batch-runs.md)
+- [Configure Redis and Workers](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/configuration-recipes.md)
+- [Production deployment](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/production-deployment.md)
+- [Failure runbooks](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/failure-runbooks.md)
+- [中文用户手册](https://github.com/vextjs/queuebit/blob/main/docs/v01/zh/index.md)
 
-Use explicit worker and scheduler entries for vext projects. `vext start` does not automatically start queue workers, and vext routes should batch-submit prepared business payloads with `Queue.addBulk`.
+## Choose a Path
 
-## Configuration and CLI
+| Goal | Start here |
+|---|---|
+| Run the first background task | [Quick start](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/quick-start.md) |
+| Add retry, timeout, delay, or duplicate protection | [Run one background job](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/job-recipes.md) |
+| Page many database records into jobs | [Process many database records](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/batch-runs.md) |
+| Integrate with vext | [vext integration](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/vext-integration.md) |
+| Prepare production Redis and Workers | [Configure Redis and Workers](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/configuration-recipes.md) |
+| Recover an incident | [Failure runbooks](https://github.com/vextjs/queuebit/blob/main/docs/v01/en/failure-runbooks.md) |
 
-```ts
-import { defineQueuebitConfig } from 'queuebit';
+## Compatibility
 
-export default defineQueuebitConfig({
-  connection: { url: 'redis://127.0.0.1:6379' },
-  namespace: 'dev:billing',
-  queues: {
-    notification: {
-      defaultJobOptions: { attempts: 3 },
-      worker: {
-        concurrency: 4,
-        leaseMs: 30000,
-        renewIntervalMs: 10000,
-        drainTimeoutMs: 30000
-      },
-      scheduler: { domain: 'billing-notification' }
-    }
-  },
-  metrics: { enabled: true }
-});
-```
+Queuebit core requires Node.js `>=20`. The `queuebit/vext` adapter and canonical vext example require Node.js `>=20.19` with `vextjs@0.3.26`.
 
-Useful commands:
+Redis requires `>=7.2`. Supported Redis topologies are standalone Redis or managed single-primary Redis, optionally discovered by Sentinel. Redis Cluster and non-Redis backends are not part of v0.1.
+
+Queuebit provides at-least-once processing. External side effects such as email, payment, webhook, and business database writes still need stable business idempotency keys.
+
+## What Is Included
+
+- Direct jobs with `jobs.add`, `addBulk`, inspect, cancel, retry-failed replacement, delay, retry, timeout, and backpressure.
+- Worker kernel and runner with Redis-backed claim, renew, drain, stalled recovery, and cooperative time advancement.
+- Durable BatchRun identity with source/mapper/processor/completion registration, sequential/paced dispatch, progress checkpoints, run controls, failure listing, and recovery runs.
+- Completion event delivery with retry.
+- Redis direct URL/direct options/Sentinel connection support through `@redis/client`.
+- Health, metrics, capacity, retention, alert evaluation, CLI, and `queuebit/vext` client lifecycle adapter.
+
+## What Is Not Included in v0.1
+
+- Cron/repeatable jobs.
+- DAG or workflow orchestration.
+- Priority queues.
+- Global rate limiting.
+- Dashboard/Admin UI.
+- CDC or unbounded streams.
+- Redis Cluster or non-Redis backends.
+
+## Development Checks
 
 ```bash
-queuebit worker start --config queuebit.config.ts --queue notification
-queuebit worker drain --config queuebit.config.ts --queue notification --timeout 30s
-queuebit scheduler start --config queuebit.config.ts --domain billing-notification
-queuebit inspect queue notification --config queuebit.config.ts
-queuebit inspect workers --queue notification --config queuebit.config.ts
-queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts
-```
-
-## Operations
-
-queuebit is at-least-once. Handlers must be idempotent because worker crashes, ack loss, lease expiry, or Redis connectivity problems can redeliver a job.
-
-Use inspect output to track waiting, active, delayed, retrying, failed, stalled recoveries, active workers, and active scheduler identity.
-
-## Scope
-
-v0.1 includes:
-
-- Queue / Job / Producer / Worker / Scheduler primitives
-- retry and delayed job semantics
-- at-least-once delivery
-- lease-based stalled recovery
-- single-active scheduler domain
-- metrics and introspection
-- `queuebit/vext` adapter
-
-v0.1 does not include recurring / repeatable jobs, flows / workflow orchestration, dashboard / admin UI, Redis Cluster support, or non-Redis queue backends.
-
-## Local Documentation Development
-
-Install the documentation site dependencies first:
-
-```bash
-cd website
-npm install
-```
-
-Then run one of:
-
-```bash
-npm run docs:dev
+npm run typecheck
+npm run typecheck:examples
+npm test
+npm run docs:validate
 npm run docs:build
-npm run docs:preview
 ```
 
-The root package remains focused on the npm package surface. The `website/` directory owns documentation build dependencies.
+Redis-backed suites are environment-gated:
+
+```bash
+npm run test:redis
+npm run test:redis:faults
+npm run test:redis:sentinel
+```
+
+Without the required Redis or Sentinel environment variables, those suites skip with exit code 0.
+
+## Package
+
+```bash
+npm pack --dry-run
+```
+
+The published package contains `dist`, `README.md`, `LICENSE`, and `package.json`.
 
 ## License
 

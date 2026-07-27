@@ -1,8 +1,12 @@
 # 运维与排查
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
+
 ## 运维目标
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">用户运维手册</span>
 
 queuebit 的运维入口优先回答两个问题：
 
@@ -41,7 +45,7 @@ flowchart TD
 | handler 日志 | 业务异常、外部依赖、超时 | 修业务错误，不要先改队列 |
 | Redis / namespace | 连接、namespace、queue name 是否一致 | 修配置并重启对应进程 |
 
-## Metrics / Introspection
+## 指标与自检（Metrics / Introspection）
 
 queuebit v0.1 暴露以下观察面：
 
@@ -70,7 +74,7 @@ queuebit v0.1 暴露以下观察面：
 | active scheduler identity | 同一 domain 只有一个 active scheduler | 无 active、多个候选都认为自己 active、频繁切换 | domain 配置不一致、Redis 续期失败、时钟/连接抖动 | 停止推进，确认 single-active 策略 |
 | drain state | drain 后停止拉新，active jobs 在窗口内归零 | drain 超时、仍继续 claim 新 job | shutdown hook 未接入、handler 不响应取消、drainTimeout 过短 | 看 worker lifecycle 和配置错误 |
 
-## Stalled recovery
+## 卡住任务恢复（Stalled recovery）
 
 Stalled recovery 处理的是 worker 持有 job 后失联、超时、无法续租或 ack 丢失的情况。
 
@@ -81,7 +85,7 @@ Stalled recovery 处理的是 worker 持有 job 后失联、超时、无法续�
 - 重投递后必须提醒业务 handler 遵守幂等。
 - 如果 scheduler 无法确认单活资格，应该停止推进，而不是冒险恢复。
 
-## Failure modes
+## 故障模式（Failure modes）
 
 本页覆盖：
 
@@ -94,14 +98,14 @@ Stalled recovery 处理的是 worker 持有 job 后失联、超时、无法续�
 
 每种 failure mode 都应该有“系统会怎么做”和“使用者应该怎么排查”两个视角。
 
-## Troubleshooting
+## 排查步骤（Troubleshooting）
 
 排查时先运行 inspect：
 
 ```bash
-queuebit inspect queue notification --config queuebit.config.ts
-queuebit inspect workers --queue notification --config queuebit.config.ts
-queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts
+npx queuebit inspect queue notification --config queuebit.config.ts
+npx queuebit inspect workers --queue notification --config queuebit.config.ts
+npx queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts
 ```
 
 inspect 输出应足够像下面这样，让用户一眼判断问题：

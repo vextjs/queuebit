@@ -1,12 +1,16 @@
 # vext Integration
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Positioning
 
 `vext` is queuebit's first real integration target, but it is not a dependency of queuebit core.
 
 queuebit exposes the adapter through `queuebit/vext`. The adapter wires vext configuration, lifecycle, and dependency injection into queuebit without turning `vext start` into a worker or scheduler.
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">vext integration guide</span>
 
 ## Integration flow
 
@@ -18,11 +22,11 @@ flowchart LR
   Adapter --> Source["Business source<br/>orders / users / preferences"]
   Source --> Queue["Queue.addBulk<br/>enqueue jobs in bulk"]
   Queue --> Redis["Redis<br/>queue state"]
-  Redis --> Worker["worker.notification.ts<br/>dedicated worker process"]
-  Redis --> Scheduler["scheduler.ts<br/>dedicated scheduler process"]
+  Redis --> Worker["worker.notification.mjs<br/>dedicated worker process"]
+  Redis --> Scheduler["scheduler.mjs<br/>dedicated scheduler process"]
   Worker --> Business["Business service<br/>email / push / sync"]
   Scheduler --> Redis
-  Redis --> Inspect["queuebit inspect<br/>troubleshoot state"]
+  Redis --> Inspect["npx queuebit inspect<br/>troubleshoot state"]
 ```
 
 Node explanations:
@@ -176,13 +180,13 @@ await worker.run();
 Start it:
 
 ```bash
-node worker.notification.ts
+node worker.notification.mjs
 ```
 
 Or through queuebit CLI:
 
 ```bash
-queuebit worker start --vext ./vext.config.ts --queue notification
+npx queuebit worker start --vext ./vext.config.ts --queue notification
 ```
 
 ## Dedicated Scheduler entry
@@ -202,13 +206,13 @@ await scheduler.run();
 Start it:
 
 ```bash
-node scheduler.ts
+node scheduler.mjs
 ```
 
 Or through queuebit CLI:
 
 ```bash
-queuebit scheduler start --vext ./vext.config.ts --domain billing-notification
+npx queuebit scheduler start --vext ./vext.config.ts --domain billing-notification
 ```
 
 ## Recommended process topology
@@ -237,7 +241,7 @@ The adapter reads vext configuration and produces an inspectable queuebit config
 
 Field names and defaults are defined in [CLI and configuration](./cli-and-config.md).
 
-## Release checklist
+## Before production
 
 Before shipping a vext queuebit deployment, confirm:
 
@@ -251,5 +255,6 @@ Before shipping a vext queuebit deployment, confirm:
 ## Next steps
 
 - Run the non-vext path in [Quick Start](./quick-start.md).
+- Split Web, Worker, and Scheduler processes with [Production deployment](./production-deployment.md).
 - Configure worker, scheduler, and inspect commands in [CLI and configuration](./cli-and-config.md).
 - Build rollout checks from [Operations and troubleshooting](./operations.md).

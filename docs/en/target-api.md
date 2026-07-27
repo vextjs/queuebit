@@ -1,23 +1,27 @@
 # API Reference
 
-## API positioning
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
 
-<span class="manual-label">v0.1 final user manual</span>
+## How to use this page
 
-This page defines queuebit v0.1 public user-facing API semantics. Runtime implementation, quick start examples, the vext adapter, CLI behavior, and tests must remain aligned with this page.
+<span class="manual-label">Public API reference</span>
 
-## API design principles
+Use this page to look up queuebit v0.1 public objects, inputs, results, states, and errors. Complete [Quick Start](./quick-start.md) first, then use [Production deployment](./production-deployment.md) when deploying.
 
-- APIs express queue semantics first and do not expose Redis keys as the normal user path.
-- Producers, workers, and schedulers can be created and run independently.
-- Distributed semantics must be explicit: namespace, queue name, lease, retry, and scheduler domain.
-- Business handlers must be designed for at-least-once delivery; APIs do not promise exactly-once.
-- Long-lived objects must provide close, stop, or drain operations.
+## Usage conventions
+
+- Use stable namespace and queue names so Producer, Worker, and Scheduler address the same logical queue.
+- Create `Queue` in Web/API processes and run `Worker` and `Scheduler` in dedicated processes.
+- Design handlers for at-least-once delivery because crashes or uncertain acknowledgements can redeliver jobs.
+- Call `close` during application shutdown and drain Workers during deployment.
+- Normal integrations do not read or modify Redis keys.
 
 ## Core objects
 
-| Object | Target responsibility | Lifecycle |
-|--------|-----------------------|-----------|
+| Object | What it does | When to close it |
+|--------|--------------|------------------|
 | `Queue` | User entry for submitting jobs, reading state, and closing resources | Reused during app lifetime, releases Redis resources on close |
 | `Producer` | Submit jobs and return job handles | Short-lived or application-scoped |
 | `Worker` | Process jobs, renew leases, ack/fail, drain | Long-lived, must support graceful shutdown |
@@ -27,11 +31,31 @@ This page defines queuebit v0.1 public user-facing API semantics. Runtime implem
 Public type outline:
 
 ```ts
+type QueuebitTlsOptions = {
+  servername?: string;
+  ca?: string | string[];
+};
+
+type QueuebitSentinelNode = {
+  host: string;
+  port: number;
+};
+
 type QueuebitConnection = {
   url?: string;
   host?: string;
   port?: number;
   database?: number;
+  username?: string;
+  password?: string;
+  tls?: boolean | QueuebitTlsOptions;
+  sentinel?: {
+    name: string;
+    nodes: QueuebitSentinelNode[];
+    username?: string;
+    password?: string;
+    tls?: boolean | QueuebitTlsOptions;
+  };
 };
 
 type QueueOptions = {
@@ -57,9 +81,35 @@ type JobInput<TPayload> = {
     delayMs?: number;
     attempts?: number;
     backoff?: { type: 'fixed' | 'exponential'; delayMs: number };
+    timeoutMs?: number;
   };
 };
+
+type BulkAddResult<TPayload> = {
+  inputIndex: number;
+  job: Job<TPayload>;
+  created: boolean;
+};
+
+type HandlerContext = {
+  signal: AbortSignal;
+  attempt: number;
+};
 ```
+
+## Redis connection model
+
+`QueuebitConnection` supports local Redis, managed Redis, ACL/password, TLS, and Sentinel connection-layer failover. Queue semantics target single-primary Redis only; Redis Cluster is unsupported in v0.1.
+
+| Form | Use case | Example |
+|------|----------|---------|
+| `url` | Local or managed Redis provides one connection string | `redis://127.0.0.1:6379`, `rediss://user:pass@redis.example.com:6380/0` |
+| `host` / `port` / `database` | Platforms expose host, port, and DB separately | `{ host: 'redis.example.com', port: 6379, database: 0 }` |
+| `username` / `password` | Redis ACL or managed Redis password | Use with `url` or `host/port` |
+| `tls` | Managed Redis requires TLS | `tls: true` or `tls: { servername: 'redis.example.com' }` |
+| `sentinel` | Sentinel / automatic failover | Set master `name` and sentinel `nodes` |
+
+Sentinel only means the connection layer can rediscover the primary. During failover, workers should stop claiming, schedulers should stop promoting when leadership is uncertain, and jobs recover through lease/retry/stalled recovery.
 
 ## Minimal examples
 
@@ -124,44 +174,53 @@ const scheduler = new Scheduler({
 await scheduler.run();
 ```
 
-## Queue operations
+## Queue API
 
-| Operation | Target semantics | Required constraints |
-|-----------|------------------|----------------------|
-| create queue | Bind Redis connection, namespace, and queue name | namespace required; queue name stable |
-| add | Write one waiting or delayed job | Return a traceable job id; useful for tests, admin actions, or truly single-record business actions |
-| addBulk | Atomically submit a batch of jobs | Return job ids for the batch; first-time user flows should prefer batch submission |
-| get job | Query job metadata and state | Does not require exposing payload beyond configured policy |
-| inspect | Read queue depth, active, delayed, retry, and stalled overview | Must not trigger state transitions |
-| drain | Stop new claims or request worker drain | Does not delete jobs or force success |
-| close | Release resources | Must not leave renew loops in this process |
+| Call | Result | Failures and notes |
+|------|--------|--------------------|
+| `new Queue(name, options)` | Binds Redis, namespace, and a stable queue name | Invalid connection or namespace fails creation |
+| `queue.add(name, data, opts?)` | Returns one traceable job | Use for truly single-record business actions |
+| `queue.addBulk(jobs)` | Returns `BulkAddResult[]` in input order; prefer for business batches | Validates the whole batch and atomically writes new jobs; one invalid or conflicting item rejects the whole batch |
+| `queue.getJob(id)` | Returns `Job` metadata and current state | Returns `null` when the job does not exist |
+| `queue.inspect()` | Returns waiting, active, delayed, retry, failed, and stalled overview | Read-only; does not advance state |
+| `queue.close()` | Releases resources used by this Queue | Do not submit new jobs after close |
 
-## Worker operations
+`addBulk` has one deterministic contract:
 
-| Operation | Target semantics | Required constraints |
-|-----------|------------------|----------------------|
-| start | Start claiming jobs and executing handler | Must set worker identity and concurrency |
-| renew lease | Renew lease during processing | Lease failure enters uncertainty handling |
-| ack complete | Mark job completed | Lost ack may cause redelivery |
-| fail retryable | Record failure and schedule retry | Attempts and backoff must be observable |
-| fail terminal | Mark failed after maximum attempts | Error summary must be diagnosable |
-| drain | Stop claiming new jobs and wait for active jobs | Timeout falls back to lease/recovery rules |
-| stop | Stop worker runtime | Must not claim or renew unknown jobs |
+| Situation | Result |
+|-----------|--------|
+| Every item is new and valid | All jobs are created atomically and returned in input order with `created: true` |
+| A key already exists with the same job content | That result uses the existing job and returns `created: false` |
+| The same key is repeated inside one input batch | The whole call rejects before writing |
+| An existing key points to different job content | The whole call rejects with an idempotency conflict |
+| Any item is invalid or Redis cannot commit | The whole call rejects; callers must not assume a partial batch was accepted |
 
-## Scheduler operations
+## Worker API
 
-| Operation | Target semantics | Required constraints |
-|-----------|------------------|----------------------|
-| acquire leadership | Acquire scheduler-domain single-active role | Stop progression when uncertain |
-| promote delayed | Move due delayed jobs to waiting | Must be atomic |
-| reschedule retry | Move due retry jobs to waiting | Must not consume attempts twice |
-| recover stalled | Recover active jobs with expired leases | Must preserve redelivery evidence |
-| heartbeat | Maintain scheduler identity | Stop progression after losing leadership |
-| stop | Stop time progression | Must not leave fake active state |
+| Call | Result | Failures and notes |
+|------|--------|--------------------|
+| `new Worker(name, handler, options)` | Registers `(job, ctx: HandlerContext) => Promise<void>` and Worker settings | Queue and namespace must match Producer; pass `ctx.signal` to cooperative downstream APIs |
+| `worker.run()` | Claims and processes jobs until closed | Handler errors follow attempts/backoff into retry or failed |
+| `worker.close({ drain, timeoutMs })` | Stops new claims and optionally waits for active jobs | Timeout is not success; unfinished jobs use recovery |
+| Worker events/logs | Expose completed, failed, retry, stalled, and connection errors | Uncertain ack or lease may cause redelivery |
+
+When `opts.timeoutMs` expires, queuebit aborts `ctx.signal` and records `HandlerTimeoutError`. The attempt then follows the configured retry policy and eventually becomes `failed`. JavaScript cannot forcibly stop side effects that ignore the signal, so handlers must pass `ctx.signal` to supported clients and remain idempotent.
+
+Worker event names are `completed`, `failed`, `retrying`, `stalled`, and `error`. A listener exception is reported as an `error` event/log entry and never changes the job state.
+
+Metrics are pull-based in v0.1: call `queue.inspect()` or use the CLI JSON output. queuebit does not include a dashboard or a Prometheus HTTP server.
+
+## Scheduler API
+
+| Call | Result | Failures and notes |
+|------|--------|--------------------|
+| `new Scheduler(options)` | Binds queue names and a `domain` | Candidates in one group use the same stable domain |
+| `scheduler.run()` | Active instance advances delayed, retrying, and stalled jobs | Does not advance without proven single-active ownership |
+| `scheduler.close()` | Stops heartbeat and time progression | Delayed/retry work pauses until another candidate takes over |
 
 ## Job states
 
-Target state machine:
+User-visible state flow:
 
 ```mermaid
 flowchart LR
@@ -191,9 +250,9 @@ Node explanations:
 
 ## Errors and events
 
-v0.1 needs at least these categories:
+Callers handle these error categories:
 
-| Type | Target example | User action |
+| Type | What you may see | User action |
 |------|----------------|-------------|
 | Configuration error | Missing namespace, queue name, or invalid Redis config | Fail before start and fix config |
 | Redis unavailable | Connection failure, command timeout, script failure | Stop claiming and wait for recovery or operator action |

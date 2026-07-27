@@ -1,10 +1,14 @@
-# Worker 与 Scheduler 生命周期
+# Worker 与 Scheduler 内部生命周期
+
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
 
 ## 页面定位
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">Maintainer / Internals</span>
 
-本页说明 queuebit v0.1 中 Producer、Worker、Scheduler 的运行生命周期，以及用户在启动、关闭、drain 和恢复时能观察到的行为。
+本页面向实现和维护 queuebit runtime 的贡献者，描述 Producer、Worker、Scheduler 的内部阶段与验收约束。使用 queuebit 部署进程请看 [生产部署](./production-deployment.md)；执行 drain 或排查故障请看 [运维与排查](./operations.md)。
 
 ## Producer 生命周期
 
@@ -91,7 +95,7 @@ sequenceDiagram
 | Worker | 声明、处理、续租、ack/fail job |
 | Scheduler | 推进时间状态和恢复状态，且同 domain 单活 |
 
-## 实现验收
+## 维护者验收
 
 - Worker 关闭路径必须能证明没有遗留续租 timer。
 - Scheduler 失去 single-active 后必须停止推进。

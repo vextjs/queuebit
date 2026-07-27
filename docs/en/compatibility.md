@@ -1,8 +1,12 @@
 # Environment and Compatibility Boundary
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Read this first
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">Environment and compatibility</span>
 
 - queuebit v0.1 integrates Redis only and does not introduce other queue backends.
 - The first-version target topology uses explicit producer, worker, and scheduler roles instead of letting Web processes implicitly perform every role.
@@ -44,6 +48,18 @@
 | Single-process dev | Local development only | Must be explicitly marked as dev/demo | Not a production topology recommendation |
 | Dashboard / admin UI | Not a v0.1 target | Re-evaluate in a later phase | Does not block the first core runtime release |
 
+## v0.1 feature boundary
+
+| Capability | v0.1 status | User alternative |
+|------------|-------------|------------------|
+| Priority | Unsupported | Split business queues; do not assume strict order across queues |
+| Global rate limiting | Not built in | Enforce provider quotas in a shared business client or gateway |
+| DLQ / manual retry / replay | Not built in | Fix the cause and resubmit through an audited business administration path |
+| Cancel / remove | Unsupported | Validate before enqueue; check business cancellation state before handler effects |
+| Recurring / repeatable | Unsupported | Use an external timer to create ordinary delayed jobs with stable period keys |
+| Flows / DAG | Unsupported | Orchestrate independent jobs in a business state machine |
+| Public retention config | Unsupported | v0.1 makes no user-configurable result-retention promise |
+
 ## vext first-integration boundary
 
 The `vext` adapter should make queuebit easier to adopt in vext projects, but it must not blur distributed responsibility:
@@ -62,4 +78,5 @@ The `vext` adapter should make queuebit easier to adopt in vext projects, but it
 | How are process roles configured? | [CLI and configuration](./cli-and-config.md) |
 | How do workers and schedulers stop? | [Worker and Scheduler Lifecycle](./worker-lifecycle.md) |
 | How does recovery work after failures? | [Failure Modes and Recovery](./failure-modes.md) |
+| What exact actions should operators take? | [Failure runbooks](./failure-runbooks.md) |
 | How should the vext adapter follow these boundaries? | [vext integration](./vext-integration.md) |

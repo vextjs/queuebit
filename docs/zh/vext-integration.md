@@ -1,12 +1,16 @@
 # vext 接入
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
+
 ## 定位
 
 `vext` 是 queuebit 的首个真实接入目标，但不是 queuebit core 的依赖。
 
 queuebit 通过 `queuebit/vext` 提供 adapter。adapter 负责把 vext 配置、生命周期和依赖注入接到 queuebit，但不会把 `vext start` 隐式变成 worker 或 scheduler。
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">vext 接入指南</span>
 
 ## 接入流程图
 
@@ -18,11 +22,11 @@ flowchart LR
   Adapter --> Source["业务数据源<br/>订单 / 用户 / 通知偏好"]
   Source --> Queue["Queue.addBulk<br/>批量提交 jobs"]
   Queue --> Redis["Redis<br/>queue state"]
-  Redis --> Worker["worker.notification.ts<br/>独立进程消费"]
-  Redis --> Scheduler["scheduler.ts<br/>独立进程推进时间任务"]
+  Redis --> Worker["worker.notification.mjs<br/>独立进程消费"]
+  Redis --> Scheduler["scheduler.mjs<br/>独立进程推进时间任务"]
   Worker --> Business["业务服务<br/>发送邮件 / 推送 / 同步数据"]
   Scheduler --> Redis
-  Redis --> Inspect["queuebit inspect<br/>排查状态"]
+  Redis --> Inspect["npx queuebit inspect<br/>排查状态"]
 ```
 
 节点说明：
@@ -137,7 +141,7 @@ export async function POST(request: Request) {
 
 ## 独立 Worker 入口
 
-创建 `worker.notification.ts`。worker 必须显式启动，不能依赖 Web/API 进程热重载或 HTTP worker 数量。
+创建 `worker.notification.mjs`。worker 必须显式启动，不能依赖 Web/API 进程热重载或 HTTP worker 数量。
 
 ```ts
 import { createVextQueueWorker } from 'queuebit/vext';
@@ -178,18 +182,18 @@ await worker.run();
 启动命令：
 
 ```bash
-node worker.notification.ts
+node worker.notification.mjs
 ```
 
 或使用 queuebit CLI：
 
 ```bash
-queuebit worker start --vext ./vext.config.ts --queue notification
+npx queuebit worker start --vext ./vext.config.ts --queue notification
 ```
 
 ## 独立 Scheduler 入口
 
-创建 `scheduler.ts`。scheduler 只推进 delayed、retry 和 stalled recovery，不处理业务 handler。
+创建 `scheduler.mjs`。scheduler 只推进 delayed、retry 和 stalled recovery，不处理业务 handler。
 
 ```ts
 import { createVextQueueScheduler } from 'queuebit/vext';
@@ -206,13 +210,13 @@ await scheduler.run();
 启动命令：
 
 ```bash
-node scheduler.ts
+node scheduler.mjs
 ```
 
 或使用 queuebit CLI：
 
 ```bash
-queuebit scheduler start --vext ./vext.config.ts --domain billing-notification
+npx queuebit scheduler start --vext ./vext.config.ts --domain billing-notification
 ```
 
 ## 推荐进程拓扑
@@ -241,7 +245,7 @@ vext adapter 读取 vext 配置，但最终仍生成 queuebit 配置摘要。用
 
 字段默认值和错误策略见 [CLI 与配置](./cli-and-config.md)。
 
-## 发布检查清单
+## 上线前检查
 
 - Web / API 进程只提交 job，不会因为启动 vext app 而隐式消费。
 - worker 有独立启动命令、关闭策略和日志标识。
@@ -253,5 +257,6 @@ vext adapter 读取 vext 配置，但最终仍生成 queuebit 配置摘要。用
 ## 下一步
 
 - 用 [快速开始](./quick-start.md) 跑通非 vext 的最小链路。
+- 用 [生产部署](./production-deployment.md) 拆分 Web、Worker、Scheduler 并配置 Redis。
 - 用 [CLI 与配置](./cli-and-config.md) 固化 worker、scheduler 和 inspect 命令。
 - 用 [运维与排查](./operations.md) 建立上线前检查项。

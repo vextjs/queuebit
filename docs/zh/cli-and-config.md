@@ -1,10 +1,16 @@
 # CLI 与配置
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
+
 ## 配置入口
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">用户配置参考</span>
 
-queuebit 使用 `queuebit.config.ts` 作为默认配置文件。配置必须让使用者明确表达：
+queuebit 默认读取 `queuebit.config.ts`。如果你刚开始接入，只需先设置 Redis、namespace 和 queue name；准备生产时，再按进程角色补齐 Worker、Scheduler、重试、租约和观测配置。
+
+一个配置文件可以表达：
 
 - Redis 连接、namespace 和 queue name。
 - Web producer、worker、scheduler 的进程角色。
@@ -12,22 +18,36 @@ queuebit 使用 `queuebit.config.ts` 作为默认配置文件。配置必须让�
 - worker concurrency、lease、drain、retry、delay 等分布式关键参数。
 - metrics / introspection 暴露方式。
 
-配置不得隐藏关键拓扑。例如，不能因为应用启用了 vext plugin，就默认让所有 Web worker 都成为 queue worker 和 scheduler。
+生产环境中，请显式选择每个进程承担的角色。启用 vext plugin 不会自动把所有 Web worker 变成 queue Worker 或 Scheduler。
 
 ## 配置决策树
 
 第一次接入时，使用者应该先选择当前进程角色，再选择字段，而不是从完整配置表里猜。
 
-| 你要做什么 | 选择的进程角色 | 必须显式配置 | 禁止隐式发生 |
+| 你要做什么 | 选择的进程角色 | 需要配置 | 当前进程不会自动做什么 |
 |------------|----------------|--------------|--------------|
 | 在 HTTP / API 进程提交 job | Web producer | 创建 `Queue` 或启用 vext producer | Web 进程自动消费 job 或抢占 scheduler |
 | 独立消费后台任务 | worker-only | `worker.concurrency`、lease/drain 参数、handler 入口 | worker 自动承担 scheduler |
 | 推进 delayed / retry / stalled | scheduler-only | `scheduler.domain` 和 queue 列表 | scheduler 执行业务 handler |
 | 本地演示完整链路 | single-process dev | 三个角色都显式开启，并标记为 dev/demo | 把该拓扑写成生产推荐 |
 
-如果用户只记一条规则：生产环境默认拆成 `web producer -> worker process -> scheduler process`，每个角色都必须显式开启或关闭。
+只需先记一条规则：生产环境默认拆成 `web producer -> worker process -> scheduler process`，每个角色都由你显式开启或关闭。
 
-## 最小配置
+## 从最小到生产配置
+
+首次运行的最小配置：
+
+```ts
+import { defineQueuebitConfig } from 'queuebit';
+
+export default defineQueuebitConfig({
+  connection: { url: 'redis://127.0.0.1:6379' },
+  namespace: 'dev:billing',
+  queues: { notification: {} }
+});
+```
+
+完成 [快速开始](./quick-start.md) 后，再使用下面的生产配置示例：
 
 ```ts
 import { defineQueuebitConfig } from 'queuebit';
@@ -58,7 +78,7 @@ export default defineQueuebitConfig({
 });
 ```
 
-single-process dev 可以同时开启 producer、worker、scheduler，但必须只用于本地演示或最小验证。生产文档和 adapter 文档不得把它放在默认路径。
+single-process dev 可以同时开启 Producer、Worker、Scheduler，适合本地验证；生产环境请使用独立进程，见 [生产部署](./production-deployment.md)。
 
 第一次填写配置时，先按下面顺序取值，不要先猜完整参数表：
 
@@ -76,9 +96,14 @@ single-process dev 可以同时开启 producer、worker、scheduler，但必须�
 
 配置结构：
 
-| 字段 | 必填条件 | 目标语义 | 用户选择建议 |
-|------|----------|----------|--------------|
+| 字段 | 何时填写 | 用途 | 怎么选 |
+|------|----------|------|--------|
 | `connection` | 所有角色必填 | Redis 连接信息或已创建连接引用 | 同一 queue 的 producer、worker、scheduler 必须指向同一逻辑 Redis keyspace |
+| `connection.url` | 推荐本地或托管连接串 | Redis URL，支持 `redis://` 和需要 TLS 的 `rediss://` | 首次本地用 `redis://127.0.0.1:6379` |
+| `connection.host` / `connection.port` / `connection.database` | 不使用 URL 时 | 拆分连接字段 | 适合平台把 host、port、db 分开注入的场景 |
+| `connection.username` / `connection.password` | Redis ACL 或托管 Redis 认证 | 认证信息 | 可与 URL 或 host/port 同用；缺失时启动前失败并指出认证失败 |
+| `connection.tls` | 托管 Redis 要求 TLS 时 | TLS 开关或 SNI/CA 选项 | `rediss://` 或 `tls: true` 二选一表达清楚即可 |
+| `connection.sentinel` | 使用 Sentinel / 自动故障转移时 | master 名称和 sentinel 节点 | 只表示连接层 failover；Redis Cluster 仍 fail fast |
 | `namespace` | 所有角色必填 | Redis keyspace 隔离前缀，区分环境、应用和租户 | 建议包含环境和应用，不要用空字符串 |
 | `queues.<name>` | 至少一个 | queue name，业务稳定标识 | 使用稳定业务名，不要使用实例 ID |
 | `queues.<name>.defaultJobOptions.attempts` | 使用 retry 时建议配置 | 最大尝试次数 | 默认不应无限重试 |
@@ -90,9 +115,47 @@ single-process dev 可以同时开启 producer、worker、scheduler，但必须�
 | `queues.<name>.scheduler.domain` | scheduler 进程必填 | scheduler 单活范围 | 同一 queue 的候选 scheduler 使用同一个 domain |
 | `metrics.enabled` | 否 | 是否暴露 metrics/introspection | 本地 introspection 必须可用；网络暴露应显式开启 |
 
+## Redis 连接示例
+
+本地开发：
+
+```ts
+connection: { url: 'redis://127.0.0.1:6379' }
+```
+
+托管 Redis，要求认证和 TLS：
+
+```ts
+connection: {
+  url: 'rediss://redis.example.com:6380/0',
+  username: 'default',
+  password: 'redis-password',
+  tls: true
+}
+```
+
+Sentinel / 自动故障转移：
+
+```ts
+connection: {
+  sentinel: {
+    name: 'mymaster',
+    nodes: [
+      { host: '10.0.0.11', port: 26379 },
+      { host: '10.0.0.12', port: 26379 },
+      { host: '10.0.0.13', port: 26379 }
+    ],
+    username: 'default',
+    password: 'redis-password'
+  }
+}
+```
+
+Sentinel failover 期间不要把“Redis 可重新连接”理解成“job 一定不中断”。worker 应停止不确定 claim，scheduler 失去 single-active 资格时停止推进，job 依靠 lease/retry/stalled recovery 恢复。
+
 ## 默认与范围策略
 
-每个字段都必须有默认、范围和失败行为。
+下表列出省略字段时采用的默认值、可用范围和配置错误结果：
 
 | 字段 | v0.1 推荐默认 | 范围 / 约束 | 失败行为 |
 |------|---------------|-------------|----------|
@@ -109,11 +172,13 @@ single-process dev 可以同时开启 producer、worker、scheduler，但必须�
 
 ## 配置错误策略
 
-配置错误必须在启动前尽早暴露，不能等 worker claim job 后才失败。
+配置无效时，queuebit 会尽量在进程开始领取 job 之前报错：
 
-| 错误类型 | 目标错误策略 |
+| 错误类型 | 你会看到的处理 |
 |----------|--------------|
 | 缺少 `connection` / `namespace` / `queues` | fail fast，并指出缺少字段和当前进程角色 |
+| Redis 认证失败或 TLS 配置错误 | fail fast，指出是认证、TLS 握手或证书/hostname 问题 |
+| Sentinel 无法发现 master | fail fast 或进入不可用状态，不允许 scheduler 冒险推进 |
 | worker 命令启动但 lease 参数关系错误 | fail fast，说明 `renewIntervalMs` 必须小于 `leaseMs` |
 | scheduler 命令启动但缺少 `scheduler.domain` | fail fast，避免多个 scheduler 使用隐式 domain |
 | Redis Cluster 未支持但检测到 cluster 配置 | fail fast，提示查看 [运行环境与兼容边界](./compatibility.md) |
@@ -126,14 +191,14 @@ CLI 覆盖 worker、scheduler 和 inspect：
 
 | 命令 | 语义 |
 |------|------|
-| `queuebit worker start --config queuebit.config.ts --queue notification` | 启动独立 worker runtime |
-| `queuebit worker drain --config queuebit.config.ts --queue notification --timeout 30s` | 请求 worker 停止拉新并等待完成 |
-| `queuebit scheduler start --config queuebit.config.ts --domain billing-notification` | 启动独立 scheduler runtime |
-| `queuebit inspect queue notification --config queuebit.config.ts` | 查看 queue depth、active、delayed、retry、stalled |
-| `queuebit inspect workers --queue notification --config queuebit.config.ts` | 查看 worker identity、heartbeat、drain 状态 |
-| `queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts` | 查看 active scheduler identity 与 domain 状态 |
+| `npx queuebit worker start --config queuebit.config.ts --queue notification` | 启动独立 worker runtime |
+| `npx queuebit worker drain --config queuebit.config.ts --queue notification --timeout 30s` | 请求 worker 停止拉新并等待完成 |
+| `npx queuebit scheduler start --config queuebit.config.ts --domain billing-notification` | 启动独立 scheduler runtime |
+| `npx queuebit inspect queue notification --config queuebit.config.ts` | 查看 queue depth、active、delayed、retry、stalled |
+| `npx queuebit inspect workers --queue notification --config queuebit.config.ts` | 查看 worker identity、heartbeat、drain 状态 |
+| `npx queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts` | 查看 active scheduler identity 与 domain 状态 |
 
-CLI 不能成为唯一入口。core API 和 vext adapter 也必须能表达同样的生命周期语义。
+这些动作也可通过 core API 或 vext adapter 完成；CLI 适合独立进程和运维操作。
 
 ## 进程入口
 
@@ -156,12 +221,12 @@ scheduler process -> scheduler runtime
 
 ## vext 配置关系
 
-vext adapter 可以读取 vext 配置并生成 queuebit 配置，但必须保持以下边界：
+vext adapter 会把 vext 配置映射为 queuebit 配置。接入时注意：
 
 - vext app 启动不等于 queue worker 启动。
 - vext cluster worker 数量不等于 queue worker concurrency。
-- vext reload 必须触发 worker drain 或显式 stop。
-- adapter 不能隐藏 scheduler domain；单活策略必须可观测。
+- vext reload 时需要选择 Worker drain 或显式 stop。
+- `scheduler.domain` 仍由你配置，并可通过 inspect 查看当前 active Scheduler。
 
 ## 下一步
 

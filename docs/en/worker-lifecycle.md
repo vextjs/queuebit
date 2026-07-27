@@ -1,10 +1,14 @@
-# Worker and Scheduler Lifecycle
+# Worker and Scheduler Internal Lifecycle
+
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
 
 ## Page positioning
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">Maintainer / Internals</span>
 
-This page explains the queuebit v0.1 Producer, Worker, and Scheduler lifecycles, including startup, shutdown, drain, lease uncertainty, and recovery behavior users can observe.
+This page is for contributors implementing or maintaining the queuebit runtime. It describes internal Producer, Worker, and Scheduler phases and acceptance constraints. To deploy queuebit, read [Production deployment](./production-deployment.md). For drain and incident response, read [Operations and troubleshooting](./operations.md).
 
 ## Producer lifecycle
 
@@ -91,7 +95,7 @@ Node explanations:
 | Worker | Claims, handles, renews, ack/fails jobs |
 | Scheduler | Advances timing and recovery state, single-active per domain |
 
-## Implementation acceptance
+## Maintainer acceptance
 
 - Worker shutdown proves no renew timer remains.
 - Scheduler stops progression after losing single-active status.

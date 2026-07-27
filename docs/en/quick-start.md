@@ -1,170 +1,148 @@
 # Quick Start
 
-## Goal
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
 
-<span class="manual-label">v0.1 final user manual</span>
+## Five-minute goal
 
-This page is the first queuebit v0.1 integration path. After following it, you read a batch of pending business records, enqueue jobs in bulk, process them from workers, advance delayed/retry/recovery from a scheduler, and inspect queue state.
+<span class="manual-label">First successful path</span>
 
-If you use vext, read this page first to understand queuebit roles, then continue to [vext integration](./vext-integration.md).
+This page does one thing: read two orders from an explicit data file, enqueue them with `Queue.addBulk`, and let a Worker append visible results to `outbox.log`. When it finishes, Redis, Producer, Worker, and inspection are connected correctly.
 
-## Shortest successful path
-
-For the first run, do not study every configuration field first. Follow this path:
-
-```text
-1. Start Redis
-2. Write queuebit.config.ts
-3. Read pending records from your business database, API, event stream, or import file
-4. Convert each record into a job payload and enqueue with Queue.addBulk
-5. Start Worker in a second process
-6. Start Scheduler in a third process
-7. Inspect waiting / active / delayed / failed
-```
+The file-writing handler is a local verification fixture, not a production notification implementation. Replace it with your email, push, sync, or file-generation service in production, then continue to [Production deployment](./production-deployment.md).
 
 ```mermaid
-flowchart TD
-  Start["Prepare Redis"] --> Config["Write queuebit.config.ts"]
-  Config --> Source["Read business source<br/>DB / API / event"]
-  Source --> Payload["Build job payloads<br/>stable ID + render variables"]
-  Payload --> Producer["Enqueue jobs in bulk<br/>Queue.addBulk"]
-  Producer --> Worker["Start Worker<br/>run handler"]
-  Producer --> Scheduler["Start Scheduler<br/>promote delayed / retry / stalled"]
-  Worker --> Inspect["inspect queue / workers / scheduler"]
-  Scheduler --> Inspect
-  Inspect --> Done{"Are the batch jobs completed?"}
-  Done -- "yes" --> Success["First success"]
-  Done -- "no" --> Triage["Use the common errors table"]
+flowchart LR
+  Source["orders.json<br/>local data source"] --> Producer["producer.mjs<br/>addBulk"]
+  Producer --> Redis["Redis<br/>notification queue"]
+  Redis --> Worker["worker.mjs<br/>process jobs"]
+  Worker --> Result["outbox.log<br/>visible result"]
+  Redis --> Inspect["queuebit inspect<br/>completed"]
 ```
-
-Node explanations:
-
-| Node | Success signal |
-|------|----------------|
-| Prepare Redis | `redis://127.0.0.1:6379` is reachable |
-| Write config | `connection`, `namespace`, and `queues.notification.scheduler.domain` are set |
-| Read business source | Your app can load pending records from a DB, API, event, or file |
-| Build payloads | Every job has a stable business ID, recipient, template, variables, and idempotency key |
-| Enqueue jobs in bulk | `Queue.addBulk` returns job ids for the submitted batch |
-| Start Worker | `inspect workers` shows a worker identity |
-| Start Scheduler | `inspect scheduler` shows an active scheduler |
-| inspect | You can distinguish waiting, active, delayed, retrying, and failed |
 
 ## Prerequisites
 
-| Item | Requirement | Notes |
-|------|-------------|-------|
-| Node.js | `>= 20` | Current LTS line for modern ESM and TypeScript tooling |
-| Redis | `>= 7.0` standalone or managed single-primary Redis | v0.1 is Redis-only; Redis Cluster is unsupported |
-| TypeScript | Recommended `>= 5.4` | JavaScript is also supported |
-| Process topology | Web/API, worker, and scheduler are explicit | Local demos can use multiple terminals on one machine |
+- Node.js `>= 20`
+- Redis `>= 7.0`, standalone or single-primary
+- An empty directory
 
-## Install
+Redis Cluster is unsupported in v0.1. If the environment is uncertain, read [Environment and Compatibility Boundary](./compatibility.md) first.
+
+## 1. Install and start Redis
 
 ```bash
 npm install queuebit
-```
-
-Start local Redis:
-
-```bash
 docker run --name queuebit-redis -p 6379:6379 redis:7
 ```
 
-Create `queuebit.config.ts`:
+If Redis is already running locally and `redis://127.0.0.1:6379` is reachable, do not start another container.
 
-```ts
+## 2. Write the minimal configuration
+
+Create `queuebit.config.mjs`:
+
+```js
 import { defineQueuebitConfig } from 'queuebit';
 
 export default defineQueuebitConfig({
   connection: { url: 'redis://127.0.0.1:6379' },
   namespace: 'dev:billing',
   queues: {
-    notification: {
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delayMs: 1000 }
-      },
-      worker: {
-        concurrency: 4,
-        leaseMs: 30000,
-        renewIntervalMs: 10000,
-        drainTimeoutMs: 30000
-      },
-      scheduler: {
-        domain: 'billing-notification'
-      }
-    }
-  },
-  metrics: { enabled: true }
+    notification: {}
+  }
 });
 ```
 
-How to choose the fields:
+Only three values matter on the first run:
 
-| Field | Where the value comes from | First-run choice |
-|-------|----------------------------|------------------|
-| `connection.url` | Redis connection string | Use `redis://127.0.0.1:6379` locally; use your managed Redis URL in production |
-| `namespace` | Environment and application name | Use a stable keyspace prefix such as `dev:billing` or `prod:billing` |
-| `queues.notification` | Business queue name | Name by business action, such as `notification`, `email`, or `invoice` |
-| `attempts` | How many retries the business can tolerate | Start with `3` for email/notification jobs; do not default to infinite retries |
-| `backoff` | How downstream systems recover | Exponential backoff fits transient provider failures; fixed delay is fine for local demos |
-| `worker.concurrency` | Handler and downstream capacity | Start from `4` or lower, then raise after observing rate limits |
-| `leaseMs` / `renewIntervalMs` | Normal job runtime | `renewIntervalMs` must be lower than `leaseMs`; split long jobs or increase lease |
-| `scheduler.domain` | Active scheduler scope | Use one stable domain for one business scheduling group |
+| Value | Meaning |
+|---|---|
+| `connection.url` | Redis address |
+| `namespace` | Redis isolation prefix for this application |
+| `notification` | Business queue name; Producer and Worker must match |
 
-## Enqueue jobs from a business data source
+Authentication, TLS, Sentinel, retries, leases, and Scheduler are production concerns and come later.
 
-queuebit does not fetch user data by itself, and examples should not invent a hardcoded user. The real flow is: your application queries pending business records, then converts each record into a job payload.
+## 3. Prepare a batch of business data
 
-The following example batches receipt notifications for paid orders. The data source can be your database, internal API, event stream, or import file; queuebit only receives the payloads you submit.
+Create `orders.json`:
 
-```ts
+```json
+[
+  {
+    "id": "order-1001",
+    "userId": "user-42",
+    "email": "ada@example.com",
+    "orderNo": "NO-1001",
+    "amountText": "$128.00"
+  },
+  {
+    "id": "order-1002",
+    "userId": "user-77",
+    "email": "lin@example.com",
+    "orderNo": "NO-1002",
+    "amountText": "$86.00"
+  }
+]
+```
+
+This file is the data source for the first run. queuebit does not query users or invent recipients. In production, replace this step with a database query, internal API, event stream, or import file.
+
+## 4. Start a Worker
+
+Create `worker.mjs`:
+
+```js
+import { appendFile } from 'node:fs/promises';
+import { Worker } from 'queuebit';
+
+const connection = { url: 'redis://127.0.0.1:6379' };
+const namespace = 'dev:billing';
+
+const worker = new Worker('notification', async (job) => {
+  await appendFile(
+    'outbox.log',
+    `${JSON.stringify({
+      jobId: job.id,
+      orderId: job.data.orderId,
+      recipient: job.data.recipient,
+      templateId: job.data.templateId
+    })}\n`
+  );
+}, {
+  connection,
+  namespace
+});
+
+await worker.run();
+```
+
+Run this in terminal A:
+
+```bash
+node worker.mjs
+```
+
+A Worker is the process that executes jobs. It waits for new jobs continuously, so the terminal staying open is expected.
+
+## 5. Enqueue jobs in bulk
+
+Create `producer.mjs`:
+
+```js
+import { readFile } from 'node:fs/promises';
 import { Queue } from 'queuebit';
-import { db } from './db';
 
-const notificationQueue = new Queue('notification', {
+const orders = JSON.parse(await readFile('orders.json', 'utf8'));
+
+const queue = new Queue('notification', {
   connection: { url: 'redis://127.0.0.1:6379' },
   namespace: 'dev:billing'
 });
 
-type ReceiptNotificationJob = {
-  orderId: string;
-  userId: string;
-  channel: 'email' | 'push';
-  recipient: string;
-  templateId: 'receipt-paid';
-  variables: {
-    orderNo: string;
-    amountText: string;
-  };
-};
-
-const pendingReceipts = await db.orders.findMany({
-  where: {
-    paid: true,
-    receiptNotificationQueuedAt: null
-  },
-  include: {
-    user: {
-      select: {
-        id: true,
-        email: true,
-        pushToken: true,
-        preferredChannel: true
-      }
-    }
-  },
-  take: 100
-});
-
-const jobs = pendingReceipts.flatMap((order) => {
-  const wantsPush = order.user.preferredChannel === 'push' && Boolean(order.user.pushToken);
-  const channel = wantsPush ? 'push' : 'email';
-  const recipient = wantsPush ? order.user.pushToken : order.user.email;
-
-  if (!recipient) {
-    // Do not invent a recipient; let the business record stay in a fixable state.
+const jobs = orders.flatMap((order) => {
+  if (!order.email) {
     return [];
   }
 
@@ -172,60 +150,8 @@ const jobs = pendingReceipts.flatMap((order) => {
     name: 'send-receipt-notification',
     data: {
       orderId: order.id,
-      userId: order.user.id,
-      channel,
-      recipient,
-      templateId: 'receipt-paid',
-      variables: {
-        orderNo: order.orderNo,
-        amountText: order.amountText
-      }
-    } satisfies ReceiptNotificationJob,
-    opts: {
-      idempotencyKey: `receipt:${order.id}`,
-      attempts: 3,
-      backoff: { type: 'exponential', delayMs: 1000 }
-    }
-  }];
-});
-
-if (jobs.length > 0) {
-  const createdJobs = await notificationQueue.addBulk(jobs);
-  const queuedOrderIds = jobs.map((job) => job.data.orderId);
-
-  await db.orders.updateMany({
-    where: { id: { in: queuedOrderIds } },
-    data: { receiptNotificationQueuedAt: new Date() }
-  });
-
-  console.log(createdJobs.map((job) => job.id));
-}
-```
-
-The important decisions:
-
-| Question | Correct model |
-|----------|---------------|
-| Where does user data come from? | From your business DB/API/event/file; queuebit only receives submitted payloads |
-| Is queuebit only for one job at a time? | No. The main queue path should support batch submission; use `addBulk` for one batch |
-| Where does notification data come from? | User profile, notification preferences, device token, template system, and order data; skip or fix incomplete records instead of fabricating recipients |
-| What belongs in payload? | Stable IDs, recipient, template ID, and required variables; avoid large uncontrolled objects in Redis |
-
-Delayed jobs can be part of the same batch by setting `delayMs` on those entries:
-
-```ts
-const delayedJobs = pendingReceipts.flatMap((order) => {
-  if (!order.user.email) {
-    return [];
-  }
-
-  return [{
-    name: 'send-receipt-reminder',
-    data: {
-      orderId: order.id,
-      userId: order.user.id,
-      channel: 'email',
-      recipient: order.user.email,
+      userId: order.userId,
+      recipient: order.email,
       templateId: 'receipt-paid',
       variables: {
         orderNo: order.orderNo,
@@ -233,173 +159,64 @@ const delayedJobs = pendingReceipts.flatMap((order) => {
       }
     },
     opts: {
-      idempotencyKey: `receipt-reminder:${order.id}`,
-      delayMs: 15 * 60 * 1000
+      idempotencyKey: `receipt:${order.id}`
     }
   }];
 });
 
-if (delayedJobs.length > 0) {
-  await notificationQueue.addBulk(delayedJobs);
-}
+const createdJobs = await queue.addBulk(jobs);
+console.log('queued job ids:', createdJobs.map((job) => job.id));
+await queue.close();
 ```
 
-## Start a Worker
-
-Workers should run as dedicated processes. A worker claims jobs, renews leases, runs handlers, ack/fails results, and drains on shutdown.
-
-In production, put payload types such as `ReceiptNotificationJob` in a shared file like `src/jobs/receipt-notification.ts` so producers and workers do not drift.
-
-```ts
-import { Worker } from 'queuebit';
-
-const worker = new Worker(
-  'notification',
-  async (job) => {
-    if (job.name !== 'send-receipt-notification') {
-      throw new Error(`Unknown job: ${job.name}`);
-    }
-
-    const data = job.data as ReceiptNotificationJob;
-
-    const user = await db.users.findUnique({ where: { id: data.userId } });
-    const order = await db.orders.findUnique({ where: { id: data.orderId } });
-
-    if (!user || !order) {
-      throw new Error(`Missing user or order for job ${job.id}`);
-    }
-
-    const message = await renderNotificationTemplate(data.templateId, {
-      ...data.variables,
-      userName: user.name
-    });
-
-    if (data.channel === 'email') {
-      await emailProvider.send({
-        to: data.recipient,
-        subject: message.subject,
-        html: message.html
-      });
-      return;
-    }
-
-    await pushProvider.send({
-      token: data.recipient,
-      title: message.title,
-      body: message.body
-    });
-  },
-  {
-    connection: { url: 'redis://127.0.0.1:6379' },
-    namespace: 'dev:billing',
-    concurrency: 4,
-    leaseMs: 30000,
-    renewIntervalMs: 10000,
-    drainTimeoutMs: 30000
-  }
-);
-
-await worker.run();
-```
-
-CLI equivalent:
+Run this in terminal B:
 
 ```bash
-queuebit worker start --config queuebit.config.ts --queue notification
+node producer.mjs
 ```
 
-## Start a Scheduler
+The example uses `addBulk` because a batch of business records should become a batch of jobs. Orders without email are skipped instead of receiving fabricated recipients.
 
-```ts
-import { Scheduler } from 'queuebit';
+## 6. Confirm success
 
-const scheduler = new Scheduler({
-  connection: { url: 'redis://127.0.0.1:6379' },
-  namespace: 'dev:billing',
-  queues: ['notification'],
-  domain: 'billing-notification'
-});
-
-await scheduler.run();
-```
-
-CLI equivalent:
+Read the handler output:
 
 ```bash
-queuebit scheduler start --config queuebit.config.ts --domain billing-notification
+cat outbox.log
 ```
 
-## Inspect queue state
+It should contain two JSON lines for `order-1001` and `order-1002`. Then inspect the queue:
 
 ```bash
-queuebit inspect queue notification --config queuebit.config.ts
-queuebit inspect workers --queue notification --config queuebit.config.ts
-queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts
+npx queuebit inspect queue notification --config queuebit.config.mjs
 ```
 
-| Metric | Meaning |
-|--------|---------|
-| `waiting` | Jobs waiting for a worker |
-| `active` | Jobs currently being processed |
-| `delayed` | Jobs waiting for scheduler promotion |
-| `retrying` | Failed jobs waiting for another attempt |
-| `failed` | Terminally failed jobs |
-| `stalledRecoveries` | Recent stalled recovery count |
-| `activeWorkers` | Workers currently heartbeating |
-| `activeScheduler` | Current active scheduler identity |
+Success means:
 
-## Graceful shutdown
+- Producer prints two job ids.
+- `outbox.log` contains two results.
+- `waiting` and `active` eventually return to `0`.
+- `completed` increases by at least `2`.
 
-```ts
-async function shutdown() {
-  await worker.close({ drain: true, timeoutMs: 30000 });
-  await scheduler.close();
-  await notificationQueue.close();
-}
+## Why there is no Scheduler yet
 
-process.once('SIGTERM', shutdown);
-process.once('SIGINT', shutdown);
-```
+These jobs run immediately and do not retry, so the first successful result does not require Scheduler. In production, Scheduler advances delayed, retrying, and stalled jobs. After the minimal path works, start a dedicated Scheduler by following [Production deployment](./production-deployment.md).
 
-Drain timeout does not mean job success; unfinished jobs recover through lease and stalled recovery rules.
+## Troubleshoot the first run
 
-## Production topology
+| Symptom | Check first | Action |
+|---|---|---|
+| Producer cannot connect | Redis process and port `6379` | Fix `connection.url` |
+| Job stays waiting | Terminal A, queue name, and namespace | Restart Worker and match the three minimal values |
+| `outbox.log` is missing | Worker stderr and directory permissions | Fix the handler error or write permission |
+| Job runs twice | At-least-once may redeliver | Use a business idempotency key in the real handler |
+| inspect cannot find the queue | Config path and namespace | Use this page's `queuebit.config.mjs` |
 
-```text
-web/api process      -> Queue.addBulk(...)
-worker process       -> Worker.run()
-scheduler process    -> Scheduler.run()
-redis                -> queue state, leases, delayed, retry, recovery
-```
-
-| Role | Recommended count | Notes |
-|------|-------------------|-------|
-| Web/API producer | Scales with your application | Does not implicitly start workers or schedulers |
-| Worker | Scales with throughput and downstream capacity | Start with low `concurrency`; handlers must be idempotent |
-| Scheduler | Multiple candidates are allowed, one active per domain | Does not run business handlers |
-| Redis | Single-primary Redis or managed single-primary Redis | Redis Cluster fails fast in v0.1 |
-
-## Common errors
-
-If the first run fails, do not inspect Redis keys first. Check in this order:
-
-1. `queuebit inspect queue notification --config queuebit.config.ts`: find where jobs are.
-2. `queuebit inspect workers --queue notification --config queuebit.config.ts`: confirm workers exist.
-3. `queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts`: confirm who advances delayed / retry jobs.
-4. Then inspect handler logs and business idempotency.
-
-| Symptom | Common cause | Fix |
-|---------|--------------|-----|
-| Job stays waiting | Worker not running, namespace mismatch, or worker draining | Run `queuebit inspect workers` |
-| Delayed job never runs | Scheduler not running or domain mismatch | Run `queuebit inspect scheduler` |
-| Job runs more than once | At-least-once redelivery after ack loss, crash, or lease expiry | Use idempotency keys and business dedupe |
-| Worker fails on startup | Redis unavailable, invalid lease config, or unsupported Redis Cluster | Fix config, then read [CLI and configuration](./cli-and-config.md) |
-| Draining leaves active jobs | Handler is slow, downstream call hangs, or drain timeout is too short | Split work or adjust timeout / lease |
+For more, see [Operations and troubleshooting](./operations.md).
 
 ## Next steps
 
-- Read [Environment and Compatibility Boundary](./compatibility.md) first to check Redis and deployment shape.
-- Read [Core concepts](./concepts.md) to build the queue, job, worker, scheduler, and lease vocabulary.
-- If you plan to integrate with vext, continue with [vext integration](./vext-integration.md).
-- If you care about configuration and commands, read [CLI and configuration](./cli-and-config.md).
-- If you are troubleshooting production behavior, read [Operations and troubleshooting](./operations.md).
+- Prepare production: [Production deployment](./production-deployment.md)
+- Integrate vext: [vext integration](./vext-integration.md)
+- Look up every field and command: [CLI and configuration](./cli-and-config.md)
+- Understand redelivery: [Failure Modes and Recovery](./failure-modes.md)

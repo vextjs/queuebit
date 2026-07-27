@@ -1,5 +1,9 @@
 # Redis-only and Distributed Recovery
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Design premise
 
 queuebit starts from multi-process, multi-instance, multi-node deployments. It does not treat local memory as the formal coordination layer.

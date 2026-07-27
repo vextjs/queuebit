@@ -1,8 +1,12 @@
 # Operations and Troubleshooting
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Operations goal
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">User operations guide</span>
 
 queuebit operations docs answer two questions first:
 
@@ -99,9 +103,9 @@ Each failure mode should describe what the system does and what the user should 
 Start with inspect commands:
 
 ```bash
-queuebit inspect queue notification --config queuebit.config.ts
-queuebit inspect workers --queue notification --config queuebit.config.ts
-queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts
+npx queuebit inspect queue notification --config queuebit.config.ts
+npx queuebit inspect workers --queue notification --config queuebit.config.ts
+npx queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts
 ```
 
 Target output should be this explicit, so users can understand the issue immediately:

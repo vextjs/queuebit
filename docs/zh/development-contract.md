@@ -1,6 +1,12 @@
 # 开发护栏
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
+
 ## 目的
+
+<span class="manual-label">Maintainer / Internals</span>
 
 本页回答一个问题：后续开发如何围绕文档推进，避免实现偏离。
 
@@ -50,6 +56,19 @@ queuebit 的文档站不是实现进度说明，而是 v0.1 最终用户手册�
 - 如果公开 API、CLI、配置字段或 Redis key 命名变化，必须同步 README、reference、quick start 和对应手册页。
 - 如果英文页未同步，不得只更新中文页后结束。
 - 不把 DevCodex 报告、内部台账或维护者 checklist 写入公开用户主路径。
+
+## 本地运行文档站
+
+从仓库根目录运行：
+
+```bash
+npm install --prefix website
+npm run docs:dev
+npm run docs:build
+npm run docs:preview
+```
+
+也可以进入 `website/`，使用 `npm run dev`、`npm run build`、`npm run preview`。根包只代理脚本，文档依赖由 `website/` 管理。
 
 ## 验收路线
 

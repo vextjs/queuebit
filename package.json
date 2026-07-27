@@ -2,8 +2,32 @@
     "name": "queuebit",
     "version": "0.0.3",
     "description": "Redis-only distributed job queue for Node.js and vext.",
+    "type": "module",
     "license": "Apache-2.0",
     "author": "VextJS",
+    "main": "./dist/index.cjs",
+    "module": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "bin": {
+        "queuebit": "./dist/cli.js"
+    },
+    "exports": {
+        ".": {
+            "types": "./dist/index.d.ts",
+            "import": "./dist/index.js",
+            "require": "./dist/index.cjs"
+        },
+        "./vext": {
+            "types": "./dist/vext/index.d.ts",
+            "import": "./dist/vext/index.js",
+            "require": "./dist/vext/index.cjs"
+        },
+        "./package.json": "./package.json"
+    },
+    "sideEffects": false,
+    "engines": {
+        "node": ">=20"
+    },
     "repository": {
         "type": "git",
         "url": "git+https://github.com/vextjs/queuebit.git"
@@ -13,9 +37,18 @@
     },
     "homepage": "https://github.com/vextjs/queuebit#readme",
     "scripts": {
-        "docs:dev": "npm --prefix website run dev",
+        "build": "tsup",
+        "typecheck": "tsc --noEmit",
+        "typecheck:examples": "tsc -p examples/receipt-batch-vext/tsconfig.json --noEmit",
+        "test": "npm run build && node --test tests",
+        "test:redis": "npm run build && node --test tests/redis-integration.test.mjs",
+        "test:redis:faults": "npm run build && node --test tests/redis-fault-injection.test.mjs",
+        "test:redis:sentinel": "npm run build && node --test tests/redis-sentinel.test.mjs",
+        "docs:dev": "npm --prefix website run dev --",
         "docs:build": "npm --prefix website run build",
-        "docs:preview": "npm --prefix website run preview"
+        "docs:preview": "npm --prefix website run preview --",
+        "docs:validate": "npm --prefix website run validate:scenarios",
+        "prepack": "npm run build"
     },
     "keywords": [
         "queue",
@@ -24,10 +57,31 @@
         "vextjs"
     ],
     "files": [
+        "dist",
         "README.md",
         "LICENSE"
     ],
     "publishConfig": {
         "access": "public"
+    },
+    "dependencies": {
+        "@redis/client": "^6.1.0",
+        "ajv": "^8.20.0",
+        "ajv-formats": "^3.0.1",
+        "typescript": "^5.8.3"
+    },
+    "peerDependencies": {
+        "vextjs": "0.3.26"
+    },
+    "peerDependenciesMeta": {
+        "vextjs": {
+            "optional": true
+        }
+    },
+    "devDependencies": {
+        "@types/node": "^20.19.43",
+        "esbuild": "0.27.2",
+        "tsup": "^8.5.1",
+        "vextjs": "0.3.26"
     }
 }

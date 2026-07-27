@@ -1,8 +1,12 @@
 # Redis 模型
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
+
 ## 页面定位
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">Maintainer / Internals</span>
 
 本页描述 queuebit v0.1 用户手册背后的 Redis keyspace、状态集合和原子迁移语义。用户通常不需要直接读写这些 key，但运维、排障和实现对齐都应以这里的语义为准。
 

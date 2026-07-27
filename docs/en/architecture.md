@@ -1,8 +1,12 @@
 # Architecture
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Page positioning
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">Maintainer / Internals</span>
 
 This page supports the final user manual by explaining why queuebit v0.1 separates core, Redis coordination, worker runtime, scheduler runtime, and the vext adapter. Users do not need this page before starting; implementers use it to keep future development aligned with the manual.
 

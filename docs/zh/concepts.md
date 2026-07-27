@@ -1,5 +1,9 @@
 # 核心概念
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
+
 ## 概念总览
 
 queuebit 的概念模型围绕 Redis 中的共享状态展开。即使首版先接入 `vext`，核心模型也不会依赖 `vext app` 对象、HTTP worker 数量或框架生命周期。

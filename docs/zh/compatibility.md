@@ -1,8 +1,12 @@
 # 运行环境与兼容边界
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
+
 ## 先看结论
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">环境与兼容性</span>
 
 - queuebit v0.1 只接入 Redis，不引入其他队列后端。
 - 首版目标拓扑是显式 producer、worker、scheduler 角色，而不是让 Web 进程隐式承担所有角色。
@@ -44,6 +48,18 @@
 | Single-process dev | 仅本地开发 | 必须显式标记为 dev/demo | 不作为生产推荐拓扑 |
 | Dashboard / admin UI | 非 v0.1 目标 | 后续阶段再评估 | 不阻塞 core runtime 首版 |
 
+## v0.1 功能边界
+
+| 能力 | v0.1 状态 | 用户替代路径 |
+|------|-----------|--------------|
+| priority | 不支持 | 按业务拆分 queue；不承诺跨 queue 严格顺序 |
+| 全局 rate limiting | 不内置 | 在共享业务客户端或网关按供应商配额限流 |
+| DLQ / manual retry / replay | 不内置 | 修复根因后由业务管理入口审计并重新提交 |
+| cancel / remove | 不支持 | 入队前校验；handler 执行前查询业务取消状态 |
+| recurring / repeatable | 不支持 | 由外部定时器产生带稳定周期键的普通 delayed job |
+| flows / DAG | 不支持 | 在业务状态机中编排独立 job |
+| public retention config | 不支持 | v0.1 不承诺用户可配置的结果保留策略 |
+
 ## vext 首接入边界
 
 `vext` adapter 的目标是让 vext 项目更容易接入 queuebit，但它不能模糊分布式责任：
@@ -62,4 +78,5 @@
 | 进程角色怎么配置 | [CLI 与配置](./cli-and-config.md) |
 | Worker 和 scheduler 怎么停止 | [Worker 与 Scheduler 生命周期](./worker-lifecycle.md) |
 | 故障时如何恢复 | [故障模式与恢复](./failure-modes.md) |
+| 线上故障具体怎么操作 | [故障处置手册](./failure-runbooks.md) |
 | vext adapter 怎么遵守这些边界 | [vext 接入](./vext-integration.md) |

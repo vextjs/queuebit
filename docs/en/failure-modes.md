@@ -1,10 +1,14 @@
 # Failure Modes and Recovery
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Page positioning
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">User recovery guide</span>
 
-This page explains queuebit v0.1 user-visible recovery semantics for Redis, worker, scheduler, ack, and lease failures.
+When a job does not finish as expected, use this page to decide whether Redis, Worker, Scheduler, or the business handler failed and choose the next action.
 
 ## Recovery principles
 
@@ -23,13 +27,20 @@ First identify what failed: Redis, worker, scheduler, handler, or shutdown. Each
 flowchart TD
   Failure["failure or unfinished job"] --> RedisCheck{"Redis reachable?"}
   RedisCheck -- "no" --> StopClaim["worker stops claiming<br/>wait for Redis recovery or operator action"]
-  RedisCheck -- "yes" --> WorkerCheck{"worker heartbeat alive?"}
-  WorkerCheck -- "no" --> Stalled["wait for lease expiry<br/>scheduler performs stalled recovery"]
-  WorkerCheck -- "yes" --> HandlerCheck{"handler failed?"}
-  HandlerCheck -- "yes" --> Retry["retry by attempts/backoff<br/>eventually failed"]
-  HandlerCheck -- "no" --> SchedulerCheck{"scheduler active?"}
-  SchedulerCheck -- "no" --> DelayedStop["delayed/retry promotion pauses<br/>start or fix scheduler"]
-  SchedulerCheck -- "yes" --> Inspect["read inspect output<br/>locate waiting/active/delayed/retrying/failed"]
+  RedisCheck -- "yes" --> Inspect["run npx queuebit inspect<br/>read the current state"]
+  Inspect --> State{"job state?"}
+  State -- "waiting" --> WorkerCheck{"worker heartbeat alive?"}
+  WorkerCheck -- "no" --> StartWorker["start or restore a worker"]
+  WorkerCheck -- "yes" --> Capacity["check concurrency and downstream capacity"]
+  State -- "active" --> LeaseCheck{"worker and lease healthy?"}
+  LeaseCheck -- "no" --> SchedulerCheck{"scheduler active?"}
+  SchedulerCheck -- "yes" --> Stalled["wait for lease expiry<br/>scheduler performs stalled recovery"]
+  SchedulerCheck -- "no" --> RestoreScheduler["restore one active scheduler<br/>then wait for recovery"]
+  LeaseCheck -- "yes" --> HandlerCheck{"handler timed out or failed?"}
+  HandlerCheck -- "yes" --> Retry["HandlerTimeoutError or business error<br/>retry, then failed"]
+  HandlerCheck -- "no" --> LongRun["check handler latency and external dependency"]
+  State -- "delayed / retrying" --> SchedulerCheck
+  State -- "failed" --> Runbook["inspect final error and attempt history<br/>fix cause before resubmitting"]
 ```
 
 Node explanations:
@@ -44,13 +55,13 @@ Node explanations:
 
 ## Failure matrix
 
-| Failure | Target system behavior | User action |
+| Failure | What you will see | User action |
 |---------|------------------------|-------------|
 | Redis unavailable at startup | producer/worker/scheduler fails to start or backs off | Fix Redis and validate namespace/connection |
 | Redis briefly unavailable while processing | worker stops claiming; renew failure enters uncertainty path | Watch retry/stalled metrics and confirm idempotency |
 | Worker process crashes | job enters stalled recovery after lease expiration | Check worker logs and redelivery risk |
 | Handler throws | job enters retry or terminal failed | Inspect error summary, attempts, backoff |
-| Handler timeout | treated as failure or recovered after lease expiration | Adjust timeout, lease, or task granularity |
+| Handler timeout | `HandlerTimeoutError`; `ctx.signal` is aborted and the attempt retries or fails | Pass the signal downstream, check side effects, then adjust `timeoutMs` or task granularity |
 | Ack lost | job may be delivered again | Use idempotency key for business side effects |
 | Lease renewal fails | worker stops claiming; active job waits for recovery | Check Redis latency, network, and worker load |
 | Scheduler double-instance race | only active scheduler advances; uncertainty stops progression | Check scheduler domain and identity |
@@ -78,9 +89,10 @@ Under at-least-once delivery, business handlers should:
 
 queuebit may expose an idempotency key entry point, but it cannot prove exactly-once behavior for a business system.
 
-## Before production
+## Rehearse before production
 
-- Every failure mode has an automated or manual verification path.
-- Operations entries describe matching metrics and troubleshooting entry points.
-- Worker crash, approximate lost ack, and scheduler leadership loss are covered by the test matrix.
-- Redelivery is not abnormal; it is a normal at-least-once risk, so business handlers need idempotency.
+- Stop one Worker and confirm stalled recovery increases after lease expiry and the job can run again.
+- Stop the active Scheduler and confirm delayed/retry promotion pauses, then resumes after a candidate takes over.
+- Briefly block Redis and confirm Workers stop claiming while state remains observable after reconnect.
+- Simulate redelivery with the same `idempotencyKey` and confirm the business handler does not duplicate side effects.
+- Run one drain and confirm new jobs stop being claimed while active jobs finish or fall back to recovery after timeout.

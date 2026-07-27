@@ -1,10 +1,16 @@
 # CLI and Configuration
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Configuration entry
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">User configuration reference</span>
 
-queuebit uses `queuebit.config.ts` as the default configuration file. Configuration must let users express:
+queuebit reads `queuebit.config.ts` by default. For the first run, set only Redis, namespace, and queue name. Before production, add Worker, Scheduler, retry, lease, and observability settings for each process role.
+
+One configuration file can express:
 
 - Redis connection, namespace, and queue names.
 - Web producer, worker, and scheduler process roles.
@@ -12,22 +18,36 @@ queuebit uses `queuebit.config.ts` as the default configuration file. Configurat
 - worker concurrency, lease, drain, retry, delay, and other distributed parameters.
 - metrics and introspection exposure.
 
-Configuration must not hide topology. Enabling a vext plugin must not automatically turn every Web worker into a queue worker and scheduler.
+Choose every production process role explicitly. Enabling the vext plugin does not automatically turn every Web worker into a queue Worker or Scheduler.
 
 ## Configuration decision tree
 
 On first integration, users should choose the process role first and then fill fields, instead of guessing from a complete option table.
 
-| What are you doing? | Process role | Must be explicit | Must not happen implicitly |
+| What are you doing? | Process role | Configure | What this process does not start automatically |
 |---------------------|--------------|------------------|----------------------------|
 | Submit jobs from an HTTP / API process | Web producer | Create `Queue` or enable vext producer | Web process consuming jobs or acquiring scheduler ownership |
 | Consume background jobs from a dedicated process | worker-only | `worker.concurrency`, lease/drain settings, handler entry | worker acting as scheduler automatically |
 | Advance delayed / retry / stalled work | scheduler-only | `scheduler.domain` and queue list | scheduler running business handlers |
 | Demo the full path locally | single-process dev | all three roles explicitly enabled and marked dev/demo | documenting this topology as the production default |
 
-If users remember only one rule: production defaults to `web producer -> worker process -> scheduler process`, and every role must be explicitly enabled or disabled.
+Remember one rule first: production defaults to `web producer -> worker process -> scheduler process`, and you explicitly enable or disable every role.
 
-## Minimal configuration
+## From minimal to production configuration
+
+Minimal first-run configuration:
+
+```ts
+import { defineQueuebitConfig } from 'queuebit';
+
+export default defineQueuebitConfig({
+  connection: { url: 'redis://127.0.0.1:6379' },
+  namespace: 'dev:billing',
+  queues: { notification: {} }
+});
+```
+
+After [Quick Start](./quick-start.md) works, use the production example below:
 
 ```ts
 import { defineQueuebitConfig } from 'queuebit';
@@ -58,7 +78,7 @@ export default defineQueuebitConfig({
 });
 ```
 
-single-process dev may enable producer, worker, and scheduler together, but only for local demos or minimum verification. Production docs and adapter docs must not put it on the default path.
+single-process dev may enable Producer, Worker, and Scheduler together for local verification. Use dedicated processes in production; see [Production deployment](./production-deployment.md).
 
 When filling configuration for the first time, choose values in this order instead of guessing from the full table:
 
@@ -76,9 +96,14 @@ When filling configuration for the first time, choose values in this order inste
 
 Configuration shape:
 
-| Field | Required when | Target semantics | User selection guidance |
-|-------|---------------|------------------|-------------------------|
+| Field | Fill when | Purpose | How to choose |
+|-------|-----------|---------|---------------|
 | `connection` | required for all roles | Redis connection information or existing connection reference | producer, worker, and scheduler for the same queue must point at the same logical Redis keyspace |
+| `connection.url` | recommended for local or managed connection strings | Redis URL with `redis://` or TLS `rediss://` | first local run uses `redis://127.0.0.1:6379` |
+| `connection.host` / `connection.port` / `connection.database` | when URL is not used | split connection fields | useful when platforms inject host, port, and DB separately |
+| `connection.username` / `connection.password` | Redis ACL or managed Redis auth | authentication settings | can be used with URL or host/port; startup errors should identify auth failure |
+| `connection.tls` | when managed Redis requires TLS | TLS switch or SNI/CA options | use either `rediss://` or `tls: true` clearly |
+| `connection.sentinel` | Sentinel / automatic failover | master name and sentinel nodes | connection-layer failover only; Redis Cluster still fails fast |
 | `namespace` | required for all roles | Redis keyspace isolation for environment, app, or tenant | include environment and app; do not use an empty string |
 | `queues.<name>` | at least one | Stable business queue name | use a stable business name, not an instance ID |
 | `queues.<name>.defaultJobOptions.attempts` | recommended for retry | maximum attempts | default behavior must not retry forever |
@@ -90,9 +115,47 @@ Configuration shape:
 | `queues.<name>.scheduler.domain` | scheduler process | scheduler single-active scope | candidate schedulers for the same queue use the same domain |
 | `metrics.enabled` | no | whether metrics/introspection are exposed | local introspection must be available; network exposure should be explicit |
 
+## Redis connection examples
+
+Local development:
+
+```ts
+connection: { url: 'redis://127.0.0.1:6379' }
+```
+
+Managed Redis with auth and TLS:
+
+```ts
+connection: {
+  url: 'rediss://redis.example.com:6380/0',
+  username: 'default',
+  password: 'redis-password',
+  tls: true
+}
+```
+
+Sentinel / automatic failover:
+
+```ts
+connection: {
+  sentinel: {
+    name: 'mymaster',
+    nodes: [
+      { host: '10.0.0.11', port: 26379 },
+      { host: '10.0.0.12', port: 26379 },
+      { host: '10.0.0.13', port: 26379 }
+    ],
+    username: 'default',
+    password: 'redis-password'
+  }
+}
+```
+
+Do not interpret Sentinel reconnects as guaranteed uninterrupted job execution. During failover, workers should stop uncertain claims, schedulers should stop promoting when single-active ownership is uncertain, and jobs recover through lease/retry/stalled recovery.
+
 ## Defaults and range policy
 
-Every field must document default, range, and failure behavior.
+The table below shows defaults, accepted ranges, and what happens when a value is invalid:
 
 | Field | v0.1 recommended default | Range / constraint | Failure behavior |
 |-------|--------------------------|--------------------|------------------|
@@ -109,11 +172,13 @@ Every field must document default, range, and failure behavior.
 
 ## Configuration error policy
 
-Configuration errors must surface as early as possible before startup, not after a worker has claimed a job.
+When configuration is invalid, queuebit reports it before the process starts claiming jobs whenever possible:
 
-| Error type | Target error policy |
+| Error type | What you will see |
 |------------|---------------------|
 | Missing `connection` / `namespace` / `queues` | fail fast and name the missing field plus current process role |
+| Redis auth failure or TLS configuration error | fail fast and identify auth, TLS handshake, certificate, or hostname problems |
+| Sentinel cannot discover a primary | fail fast or enter unavailable state; schedulers must not promote speculatively |
 | Worker command with invalid lease relationships | fail fast and explain that `renewIntervalMs` must be less than `leaseMs` |
 | Scheduler command without `scheduler.domain` | fail fast to avoid implicit scheduler domains |
 | Redis Cluster configuration detected while Cluster is unsupported | fail fast and point to [Environment and Compatibility Boundary](./compatibility.md) |
@@ -126,14 +191,14 @@ CLI coverage:
 
 | Command | Semantics |
 |---------|-----------|
-| `queuebit worker start --config queuebit.config.ts --queue notification` | Start dedicated worker runtime |
-| `queuebit worker drain --config queuebit.config.ts --queue notification --timeout 30s` | Ask workers to stop claiming and wait for completion |
-| `queuebit scheduler start --config queuebit.config.ts --domain billing-notification` | Start dedicated scheduler runtime |
-| `queuebit inspect queue notification --config queuebit.config.ts` | Show queue depth, active, delayed, retry, stalled |
-| `queuebit inspect workers --queue notification --config queuebit.config.ts` | Show worker identity, heartbeat, drain state |
-| `queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts` | Show active scheduler identity and domain status |
+| `npx queuebit worker start --config queuebit.config.ts --queue notification` | Start dedicated worker runtime |
+| `npx queuebit worker drain --config queuebit.config.ts --queue notification --timeout 30s` | Ask workers to stop claiming and wait for completion |
+| `npx queuebit scheduler start --config queuebit.config.ts --domain billing-notification` | Start dedicated scheduler runtime |
+| `npx queuebit inspect queue notification --config queuebit.config.ts` | Show queue depth, active, delayed, retry, stalled |
+| `npx queuebit inspect workers --queue notification --config queuebit.config.ts` | Show worker identity, heartbeat, drain state |
+| `npx queuebit inspect scheduler --domain billing-notification --config queuebit.config.ts` | Show active scheduler identity and domain status |
 
-CLI must not be the only entry point. Core APIs and the vext adapter must express the same lifecycle semantics.
+The same actions are available through the core API or vext adapter. The CLI is convenient for dedicated processes and operations.
 
 ## Process entries
 
@@ -156,12 +221,12 @@ Acceptable development modes:
 
 ## vext configuration relationship
 
-The vext adapter may read vext configuration and produce queuebit configuration, but these boundaries remain:
+The vext adapter maps vext configuration to queuebit configuration. Keep these boundaries in mind:
 
 - vext app start does not equal queue worker start.
 - vext cluster worker count does not equal queue worker concurrency.
-- vext reload must map to worker drain or explicit stop.
-- The adapter must not hide scheduler domain; single-active strategy must be observable.
+- Choose Worker drain or explicit stop during vext reload.
+- You still configure `scheduler.domain` and can inspect the active Scheduler.
 
 ## Next steps
 

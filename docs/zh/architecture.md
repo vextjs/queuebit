@@ -1,8 +1,12 @@
 # 架构说明
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **历史文档，已停止维护。** 当前 v0.1 最终用户手册位于 [`docs/v01/zh`](../v01/zh/index.md)。本页仅保留历史上下文，API、命令、配置和示例不得用于新接入或实现。
+
 ## 页面定位
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">Maintainer / Internals</span>
 
 本页支撑最终用户手册，说明 queuebit v0.1 为什么拆分 core、Redis coordination、worker runtime、scheduler runtime 和 vext adapter。用户不需要先读本页才能上手；实现者需要用它防止后续开发偏离手册。
 

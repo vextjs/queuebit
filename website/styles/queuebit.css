@@ -5,6 +5,51 @@
   --qb-mint: #ccf3df;
   --qb-amber: #f6c35b;
   --qb-panel: rgba(255, 255, 255, 0.82);
+  --qb-diagram-bg: rgba(255, 255, 255, 0.9);
+  --qb-diagram-border: rgba(30, 127, 87, 0.18);
+  --qb-release-bg: #11201b;
+  --qb-release-fg: #f7fff8;
+  --qb-release-height: 42px;
+}
+
+body {
+  padding-bottom: var(--qb-release-height);
+}
+
+.qb-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+.qb-release-banner {
+  position: fixed;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  z-index: 60;
+  display: flex;
+  gap: 12px;
+  align-items: baseline;
+  justify-content: center;
+  padding: 9px 20px;
+  background:
+    linear-gradient(90deg, rgba(30, 127, 87, 0.86), transparent 28%),
+    var(--qb-release-bg);
+  color: var(--qb-release-fg);
+  border-bottom: 1px solid rgba(204, 243, 223, 0.25);
+  font-size: 13px;
+}
+
+.qb-release-banner strong {
+  color: var(--qb-amber);
+  white-space: nowrap;
 }
 
 .rspress-home-hero {
@@ -37,4 +82,126 @@
   color: var(--qb-leaf);
   font-size: 0.85em;
   font-weight: 700;
+}
+
+article[role='link']:focus-visible {
+  outline: 3px solid var(--qb-amber);
+  outline-offset: 4px;
+}
+
+.rspress-doc svg[aria-roledescription] {
+  display: block;
+  width: 100% !important;
+  max-width: 920px !important;
+  height: auto !important;
+  margin: 1.25rem auto;
+  padding: 18px;
+  overflow: visible;
+  border: 1px solid var(--qb-diagram-border);
+  border-radius: 18px;
+  background: var(--qb-diagram-bg);
+  box-shadow: 0 16px 40px rgba(17, 32, 27, 0.08);
+}
+
+.rspress-doc svg[aria-roledescription] .node rect,
+.rspress-doc svg[aria-roledescription] .node polygon,
+.rspress-doc svg[aria-roledescription] .node path {
+  stroke: rgba(30, 127, 87, 0.62) !important;
+}
+
+.rspress-doc svg[aria-roledescription] .edgePath path {
+  stroke: rgba(17, 32, 27, 0.6) !important;
+}
+
+.rspress-doc svg[aria-roledescription] .edgeLabel,
+.rspress-doc svg[aria-roledescription] .label {
+  color: var(--qb-ink) !important;
+}
+
+.qb-canonical-flow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  align-items: stretch;
+  margin: 1.25rem 0;
+  padding: 18px;
+  overflow: hidden;
+  border: 1px solid var(--qb-diagram-border);
+  border-radius: 20px;
+  background:
+    radial-gradient(circle at 8% 12%, rgba(204, 243, 223, 0.72), transparent 28%),
+    linear-gradient(135deg, var(--qb-diagram-bg), rgba(255, 248, 228, 0.9));
+  box-shadow: 0 16px 40px rgba(17, 32, 27, 0.08);
+}
+
+.qb-flow-stage {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+  gap: 7px;
+  padding: 14px;
+  border: 1px solid rgba(30, 127, 87, 0.2);
+  border-top: 4px solid var(--qb-leaf);
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.86);
+}
+
+.qb-flow-stage--final {
+  grid-column: 1 / -1;
+  border-top-color: #c18409;
+  background: rgba(255, 248, 228, 0.92);
+}
+
+.qb-flow-step {
+  color: var(--qb-leaf);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.qb-flow-stage strong {
+  color: var(--qb-ink);
+  font-size: 0.92rem;
+  line-height: 1.35;
+}
+
+.qb-flow-stage > span:last-child {
+  color: var(--qb-muted);
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.qb-flow-arrow {
+  display: none;
+}
+
+@media (max-width: 700px) {
+  :root {
+    --qb-release-height: 96px;
+  }
+
+  .qb-release-banner {
+    align-items: flex-start;
+    flex-direction: column;
+    gap: 2px;
+    padding: 10px 14px;
+  }
+
+  .rspress-doc div:has(> svg[aria-roledescription]) {
+    overflow-x: auto;
+    padding-bottom: 6px;
+  }
+
+  .rspress-doc svg[aria-roledescription] {
+    min-width: 620px;
+  }
+
+  .qb-canonical-flow {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 6px;
+    padding: 14px;
+    overflow: visible;
+  }
+
 }

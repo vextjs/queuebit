@@ -1,8 +1,12 @@
 # Redis Model
 
+<!-- queuebit-v01-legacy-doc -->
+> [!WARNING]
+> **Archived and no longer maintained.** The current v0.1 final-user manual is [`docs/v01/en`](../v01/en/index.md). This page remains for historical context only; do not use its APIs, commands, configuration, or examples for new integrations or implementation.
+
 ## Page positioning
 
-<span class="manual-label">v0.1 final user manual</span>
+<span class="manual-label">Maintainer / Internals</span>
 
 This page describes the Redis keyspace, state collections, and atomic transition semantics behind the queuebit v0.1 user manual. Users usually do not read or write these keys directly, but operations, troubleshooting, and implementation alignment rely on this model.
 

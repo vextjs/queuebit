@@ -1,0 +1,11 @@
+{
+  "extends": "../../tsconfig.json",
+  "compilerOptions": {
+    "baseUrl": "../..",
+    "paths": {
+      "queuebit": ["src/index.ts"],
+      "queuebit/vext": ["src/vext/index.ts"]
+    }
+  },
+  "include": ["*.ts"]
+}
