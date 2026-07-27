@@ -1,6 +1,6 @@
 {
     "name": "queuebit",
-    "version": "0.0.3",
+    "version": "0.0.4",
     "description": "Redis-only distributed job queue for Node.js and vext.",
     "type": "module",
     "license": "Apache-2.0",
