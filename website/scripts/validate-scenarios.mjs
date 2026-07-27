@@ -413,7 +413,7 @@ function collectReadmeBoundaryErrors(source) {
     .map(match => match[1]);
   if (links.length === 0) issues.push('README: no docs/v01 links');
   for (const link of links) {
-    if (!link.startsWith('https://github.com/vextjs/queuebit/blob/')) {
+    if (!link.startsWith('https://github.com/devcodex-labs/queuebit/blob/')) {
       issues.push(`README: non-publishable docs link ${link}`);
     }
   }
@@ -430,7 +430,7 @@ function collectReadmeBoundaryErrors(source) {
 const readme = await readFile(path.join(repoDir, 'README.md'), 'utf8');
 errors.push(...collectReadmeBoundaryErrors(readme));
 const relativeReadme = readme.replace(
-  'https://github.com/vextjs/queuebit/blob/main/docs/v01/en/quick-start.md',
+  'https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/quick-start.md',
   'docs/v01/en/quick-start.md'
 );
 if (!collectReadmeBoundaryErrors(relativeReadme)
