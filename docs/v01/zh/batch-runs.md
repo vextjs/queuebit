@@ -20,7 +20,7 @@
 这段演示一个“Web 请求不能等几千封邮件发完”的收据批处理。只抓主线的话：**Web 创建 Run；Coordinator 分页派发；Worker 执行任务；completion 记录每批和整次结果。**
 
 <div class="qb-canonical-flow" role="img" aria-label="从数据库找到已支付订单，创建批处理，拆成后台任务，由多个 Worker 发送收据，并记录每批和整次结果">
-  <div class="qb-flow-stage"><span class="qb-flow-step">01 找到订单</span><strong>写入示例订单并固定范围</strong><span>23 条 paid orders → example database → 本次只处理到 boundary.maxId</span></div>
+  <div class="qb-flow-stage"><span class="qb-flow-step">01 找到订单</span><strong>从真实业务查询订单并冻结范围</strong><span>你的 repository 定义 tenant 查询 → 本次只处理到 boundary.maxId</span></div>
   <span class="qb-flow-arrow" aria-hidden="true">→</span>
   <div class="qb-flow-stage"><span class="qb-flow-step">02 创建批处理</span><strong>Web 只登记这次处理</strong><span>POST /receipt-campaigns → 立即返回 runId</span></div>
   <span class="qb-flow-arrow" aria-hidden="true">→</span>
@@ -31,83 +31,83 @@
   <div class="qb-flow-stage qb-flow-stage--final"><span class="qb-flow-step">05 记录结果</span><strong>先记录每批，再记录整次</strong><span>每批完成后推进 checkpoint；全部处理完后写入 run completion</span></div>
 </div>
 
-前置条件：Node.js `>=20.19`、Docker Compose、npm。example 只操作自己的 Redis/database 容器和 volume；端口冲突时使用脚本提示的 override，不终止未知进程。完整边界见 [我的环境能不能用](./compatibility.md)。
-
-> 发布状态：如果当前安装包或源码里的示例提示 `target-contract skeleton`，表示这个完整批处理示例尚未发布为可运行路径。不要把这种提示当成 Redis 或本机环境故障；先按 [快速开始](./quick-start.md) 跑通普通后台任务。
+经过检查的源码模板在 [`examples/receipt-batch-vext`](https://github.com/devcodex-labs/queuebit/tree/main/examples/receipt-batch-vext)。它刻意没有伪造的内存订单数组：应用用真实数据库实现 `ReceiptRepository`，然后把它传给 Queuebit 服务函数。适配后先跑类型契约检查：
 
 ```bash
 cd examples/receipt-batch-vext
-npm install
-npm run infra:up
-npm run infra:health
+npm run typecheck
 ```
 
-写入本地 fixture：
+> 发布边界：基础设施脚本仍会打印 `target-contract skeleton`，因为干净环境下的 Redis/database fixture 尚未发布。这不是正常接入路径，也不是 Redis 故障诊断。下面的 code-first 服务才是支持的 API 契约。
 
-```bash
-npm run seed
+### Worker 服务宿主
+
+每个 Worker 都从你已部署的服务组合根启动。宿主可以是 vext bootstrap、容器、systemd 或其他任意进程管理器；Queuebit 不规定命令。
+
+```ts title="receipt-worker-service.ts"
+import { startReceiptWorker } from './receipt-services.js';
+import { receiptRepository } from './your-database-composition.js';
+
+const receiptWorker = await startReceiptWorker(receiptRepository, {
+  workerId: 'receipt-worker-a',
+  concurrency: 8
+});
+
+// 在宿主自己的 shutdown 生命周期里调用。
+await receiptWorker.stop({ timeoutMs: 60_000 });
 ```
 
-预期输出：
+要提升吞吐，就在另一个宿主中用不同 `workerId` 运行同一段代码。所有宿主共享 Redis、`namespace` 和 queue name；Worker concurrency 只属于当前宿主。
 
-```text
-tenant=tenant-demo
-orders.inserted=24
-orders.paid=23
-orders.withReceiptEmail=21
-orders.expectedSkipped=2
+### Coordinator 服务宿主
+
+只有使用这个 BatchRun 定义时，才从应用代码启动一个或多个 CoordinatorRunner：
+
+```ts title="receipt-coordinator-service.ts"
+import { startReceiptCoordinator } from './receipt-services.js';
+import { receiptRepository } from './your-database-composition.js';
+
+const receiptCoordinator = await startReceiptCoordinator(receiptRepository, {
+  coordinatorId: 'receipt-coordinator-a',
+  concurrency: 2,
+  pollIntervalMs: 1_000,
+  onError: event => console.error('Queuebit coordinator error', event)
+});
+
+// 在宿主自己的 shutdown 生命周期里调用。
+await receiptCoordinator.stop({ timeoutMs: 60_000 });
 ```
 
-检查配置和 runtime 注册：
+`CoordinatorRunner` 同一时刻只运行一个 polling loop，投递到期 completion event、每个 tick 最多推进 `concurrency` 个 Run、向 Redis heartbeat role，并通过 `status().lastError` 和 `onError` 暴露失败。将 `console.error` 换成服务宿主已有的 logger。它没有 import 时副作用，也不会绑定 process signal handler。
 
-```bash
-npx queuebit config validate \
-  --config queuebit.config.ts \
-  --runtime queuebit.runtime.ts
+### Web/API 创建 Run
+
+请求路径先认证调用者，再从服务端推导 `tenantId`。它不查询订单，也不直接调用 Worker。
+
+```ts
+import type { QueuebitClient } from 'queuebit';
+
+interface AuthenticatedReceiptActor {
+  tenantId: string;
+}
+
+interface StartReceiptCampaignRequest {
+  paidBefore: string;
+}
+
+export async function startReceiptCampaign(
+  queuebit: QueuebitClient,
+  actor: AuthenticatedReceiptActor,
+  request: StartReceiptCampaignRequest
+) {
+  return queuebit.runs.start('receipt-campaign', {
+    input: { tenantId: actor.tenantId, paidBefore: request.paidBefore },
+    idempotencyKey: `receipt:${actor.tenantId}:${request.paidBefore}`
+  });
+}
 ```
 
-预期输出形态：
-
-```text
-message=Queuebit configuration is valid.
-config.namespace=receipt-demo
-config.queues=notification
-config.batchRuns=receipt-campaign
-validation.runtime=loaded
-validation.sources=paid-orders
-validation.mappers=receipt-jobs
-validation.processors=send-receipt
-validation.completions=record-receipt-batch-result,record-receipt-run-result
-```
-
-打开四个终端：
-
-```bash title="终端 A · vext Web"
-npm run start:web
-```
-
-```bash title="终端 B · Coordinator"
-npx queuebit coordinator start --config queuebit.config.ts --runtime queuebit.runtime.ts
-```
-
-```bash title="终端 C · Worker A"
-npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification --worker-id worker-a
-```
-
-```bash title="终端 D · Worker B"
-npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification --worker-id worker-b
-```
-
-vext route 内部调用 `app.queuebit.runs.start('receipt-campaign', { input, idempotencyKey })`。HTTP 层负责认证和业务输入，Queuebit 负责持久 Run identity、分页、派发、Worker 执行和 completion delivery。
-
-```bash
-curl -i http://127.0.0.1:4100/receipt-campaigns \
-  -H "Authorization: Bearer local-demo-user" \
-  -H "Content-Type: application/json" \
-  --data '{"paidBefore":"2026-07-15T00:00:00.000Z"}'
-```
-
-预期 HTTP 202：
+预期 HTTP 202 返回形状：
 
 ```json
 {
@@ -120,9 +120,11 @@ curl -i http://127.0.0.1:4100/receipt-campaigns \
 
 首次创建的响应固定返回 `created + not_created`；Coordinator 随后异步把 Run 推进到 `running`。用同一 credential、`paidBefore` 和稳定 idempotency key 重试返回相同 `runId`、当前 snapshot 与 `deduplicated: true`；相同 key 不同 input 返回 409 `QB_RUN_DEDUPLICATION_CONFLICT`。
 
-```bash
-npx queuebit run inspect <runId> --config queuebit.config.ts
-npx queuebit workers inspect --queue notification --config queuebit.config.ts
+用应用 API 读取运行状态。CLI 等价命令只保留为可选运维工具：
+
+```ts
+const snapshot = await queuebit.runs.get(run.id);
+const workers = await queuebit.roles.list({ role: 'worker', domain: 'notification' });
 ```
 
 运行中关键字段：
@@ -141,13 +143,7 @@ activeWorkers=worker-a,worker-b
 
 `dispatchCursor > checkpointCursor` 不是丢数据，而是说明后续 Batch 已持久化，前缀 Batch 的 execution/completion 屏障尚未全部通过。`not_created` 表示 Run 尚未进入执行终态，因此还没有 run completion event。
 
-验证最终结果：
-
-```bash
-npm run audit:show -- --run <runId>
-```
-
-预期：
+completion handler 应把最终证据写成以下形状：
 
 ```text
 batchCompletions=3
@@ -195,6 +191,8 @@ stateDiagram-v2
 文字步骤：先确定本次要处理到哪一批订单；Coordinator 按游标读取一页订单；这一页订单和对应 jobs 一起保存；Worker 发送本批收据；批次结果写入后才推进“已完成到哪里”，然后继续下一页；没有下一页时记录整次 Run completion。Queuebit 会把处理范围、当前位置、批次/jobs、失败详情和 completion 状态都保存到 Redis，所以崩溃后能从已保存的位置继续。
 
 ## 1. 确定有限处理范围
+
+下面的 `getDb()` 是你项目已有 repository/ORM 的占位名，不是 Queuebit API，也不是需要由 Queuebit 提供的全局数据库连接。生产代码应像 `examples/receipt-batch-vext/receipt-repository.ts` 一样，通过服务组合根把业务 repository 注入 runtime。
 
 ```ts
 sources: {
@@ -357,15 +355,18 @@ stateDiagram-v2
 
 ## 5. 启动、查询与控制
 
+在同一个已认证的应用服务中，复用前面的方法，不要把 tenant 或订单范围写死在任务代码里：
+
 ```ts
-const run = await queuebit.runs.start('receipt-campaign', {
-  input: {
-    tenantId: 'tenant-42',
-    paidBefore: '2026-07-15T00:00:00.000Z'
-  },
-  idempotencyKey: 'receipt-campaign:tenant-42:2026-07-15'
-});
+const run = await startReceiptCampaign(queuebit, actor, request);
+const snapshot = await queuebit.runs.get(run.id);
+
+await queuebit.runs.pause(run.id);
+await queuebit.runs.resume(run.id);
+await queuebit.runs.cancel(run.id, { reason: 'campaign withdrawn' });
 ```
+
+如需给值班人员提供命令行入口，下面才是等价的可选运维 CLI，不是正常业务接入路径：
 
 ```bash
 npx queuebit run inspect <runId> --config queuebit.config.ts

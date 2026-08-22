@@ -21,14 +21,16 @@ Use this page for exact fields. Do not start here for first integration; start w
 
 ## Naming and static validation
 
-`namespace` defaults to `default` and accepts 1 to 128 characters: letters, digits, colon, underscore, and hyphen. Queue, source, mapper, and handler references accept 1 to 192 characters with the same character set. Dots are not valid name characters. Unknown fields are never silently ignored.
+`namespace` has no shared static default. Queuebit resolves it in this order: the config object's `namespace`, `QUEUEBIT_NAMESPACE`, then a stable `app:<normalized-package-name>:<hash>` value derived from the nearest `package.json` name. If no package name is available, configuration fails with `QB_CONFIG_INVALID` instead of sharing a keyspace. Namespace values accept 1 to 128 characters: letters, digits, colon, underscore, and hyphen. Queue, source, mapper, and handler references accept 1 to 192 characters with the same character set. Dots are not valid name characters. Unknown fields are never silently ignored.
+
+**Upgrade from the old static default:** an application that previously omitted `namespace` used `default`. Keep both its API and Worker on that existing keyspace by setting `namespace: 'default'` or `QUEUEBIT_NAMESPACE=default` during the upgrade. Drain or migrate old jobs before removing that override and switching to the automatic application namespace.
 
 ## Root configuration
 
 | Field | Type | Required | Default | Purpose |
 |---|---|---:|---|---|
 | `connection` | `RedisConnection` | no | direct `127.0.0.1:6379/0` | Redis endpoint and server policy |
-| `namespace` | `string` | no | `default` | Environment/business keyspace isolation |
+| `namespace` | `string` | no | derived application namespace | Redis keyspace isolation; explicit code value has highest priority |
 | `workerDefaults` | `WorkerOptions` | no | below | Worker defaults |
 | `scheduler` | `SchedulerOptions` | no | cooperative | Time advancement mode and domain |
 | `queues` | `Record<string, QueueConfig>` | no | `{}` | Declared queues and backpressure |
@@ -38,7 +40,7 @@ Use this page for exact fields. Do not start here for first integration; start w
 | `limits` | `PayloadLimits` | no | below | Serialized payload and bulk limits |
 | `deduplication` | `DeduplicationConfig` | no | below | Business identity retention windows |
 
-Coordinator concurrency, source timeout, completion delivery limits, and role identity are process options passed when starting the Coordinator. They are not root `queuebit.config.ts` fields in the current runtime.
+Coordinator concurrency, source timeout, completion delivery limits, and role identity are process options passed to `client.createCoordinatorRunner(runtime, options)`, not root fields in `queuebit.config.ts`. The optional CLI role host accepts corresponding flags, but it is not the normal integration path.
 
 ## Redis connection
 
@@ -99,9 +101,25 @@ Either high watermark sets the shared latch. Both dimensions must fall to or bel
 | `heartbeatIntervalMs` | 5000 | Role heartbeat write interval |
 | `heartbeatTtlMs` | 15000 | Role heartbeat TTL |
 
-## Coordinator role options
+## CoordinatorRunner options
 
-Coordinator options are supplied by the Coordinator factory or CLI role process, not by root config. The role uses a generated `coordinatorId` unless one is passed. The CLI drain command requires that same identity so Redis can write a cooperative drain request for the intended role.
+Pass these options to `client.createCoordinatorRunner(runtime, options)`. The client supplies config, Redis, role registry, and observability; your application supplies only the role behavior below. A `coordinatorId` is generated unless you pass one. The optional CLI role host accepts corresponding flags, and its remote drain command requires that same identity so Redis can write a cooperative drain request for the intended role.
+
+| Field | Default | Constraint / effect |
+|---|---:|---|
+| `coordinatorId` | generated | Stable per service instance; used for role heartbeat and remote drain |
+| `concurrency` | 1 | Positive integer; max runnable Runs advanced per polling tick |
+| `leaseMs` | 30000 | Positive integer; Run advancement lease |
+| `sourceTimeoutMs` | 30000 | Positive integer; one source load timeout |
+| `pollIntervalMs` | `scheduler.pollIntervalMs` | Positive integer; wait before the next polling tick |
+| `completionLimit` | 25 | Integer from 1 through 100; due completion events delivered per tick |
+| `domain` | `scheduler.domain` | Role-heartbeat ownership scope |
+| `heartbeatIntervalMs` | `scheduler.heartbeatIntervalMs` | Positive integer; role heartbeat interval |
+| `heartbeatTtlMs` | `scheduler.heartbeatTtlMs` | Must be greater than heartbeat interval |
+| `drainTimeoutMs` | `scheduler.drainTimeoutMs` | Default wait for `drain()` / `stop()` |
+| `onError` | none | Receives heartbeat, completion-delivery, and Run-advance failures |
+
+One CoordinatorRunner owns one polling loop at a time: it delivers due completion events, lists runnable Runs, and advances up to `concurrency` of them. Read `runner.status().lastError` and attach `onError` to your application logger; failures are not silently discarded. `drain()` stops new polling, heartbeats the role as draining, and waits for active work. If it reaches its deadline it throws `QB_COORDINATOR_DRAIN_TIMEOUT` and remains `draining`, so the host can retry `stop()` after active work settles. Retry that runner directly before calling `client.close()`: client close is terminal cleanup and releases an owned Redis connection even when it reports a cleanup failure.
 
 ## Time advancement and Scheduler
 

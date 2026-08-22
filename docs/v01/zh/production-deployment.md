@@ -67,16 +67,62 @@ readiness 要检查 Redis、角色资格和业务依赖。liveness 只表示进�
 
 1. 先确认 Redis policy、持久化、primary role 和连接。
 2. 跑 `config validate --runtime`，阻断未注册 handler 或版本漂移。
-3. 启动 Worker，确认 heartbeat 和时间推进可用。
-4. 如果使用 BatchRun，启动 Coordinator，确认 source/completion 依赖可用。
+3. 启动 Worker 服务宿主，确认 heartbeat 和时间推进可用。
+4. 如果使用 BatchRun，启动 CoordinatorRunner 服务宿主，确认 source/completion 依赖可用。
 5. 最后放开 Web/API 创建新 work。
 
-```bash
-npx queuebit config validate --config queuebit.config.ts --runtime queuebit.runtime.ts
-npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification
-npx queuebit coordinator start --config queuebit.config.ts --runtime queuebit.runtime.ts
-vext start
+```ts title="worker-host.ts"
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+export async function startWorkerHost() {
+  const workerClient = await createQueuebitClient({ config });
+  const worker = workerClient.createWorker(
+    'notification',
+    createQueuebitRuntimeProcessor(runtime),
+    { workerId: 'worker-a', concurrency: 8, drainTimeoutMs: 60_000 }
+  );
+  worker.start();
+
+  return {
+    async close() {
+      await workerClient.close({ timeoutMs: 60_000 });
+    }
+  };
+}
 ```
+
+```ts title="coordinator-host.ts · 仅 BatchRun"
+import { createQueuebitClient } from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+interface ErrorLogger {
+  error(context: { event: unknown }, message: string): void;
+}
+
+export async function startCoordinatorHost(logger: ErrorLogger) {
+  const coordinatorClient = await createQueuebitClient({ config });
+  const coordinator = coordinatorClient.createCoordinatorRunner(runtime, {
+    coordinatorId: 'coordinator-a',
+    concurrency: 2,
+    onError: event => logger.error({ event }, 'Queuebit coordinator error')
+  });
+  coordinator.start();
+
+  return {
+    async close() {
+      await coordinatorClient.close({ timeoutMs: 60_000 });
+    }
+  };
+}
+```
+
+这些导出的服务宿主函数如何被调用由你的进程管理器决定。保留它们返回的 service，并在宿主 shutdown 生命周期调用其 `close()`。Queuebit 不会在 import 时安装 signal handler 或启动角色。`npx queuebit config validate` 只用于可选的部署前配置检查，不是运行时接入机制。
 
 Producer 不应在没有 active Worker 时无界创建 work。Queue 的 jobs/bytes 背压只是最后一道保护，不代替启动顺序和容量规划。
 

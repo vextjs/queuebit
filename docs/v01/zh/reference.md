@@ -24,13 +24,13 @@
 
 | 域 | 稳定入口 |
 |---|---|
-| 创建 client | `createQueuebitClient({ config, logger? })` |
+| 创建 client | `createQueuebitClient(config, options?)`；兼容 `createQueuebitClient({ config, logger? })` |
 | 静态配置 | `defineQueuebitConfig()` |
 | 运行时注册 | `defineQueuebitRuntime()` + 具名 source/mapper/processor/completion helper |
 | 直接 Job | `queuebit.jobs.add/addBulk/get/list/cancel/retryFailed` |
 | BatchRun | `queuebit.runs.start/get/list/listFailures/pause/resume/cancel/retryFailed` |
 | Completion | `queuebit.completions.get/list/retry` |
-| 生命周期 | `queuebit.close()`；后台角色 SIGTERM drain |
+| 生命周期 | 宿主调用 `worker.drain()`、`coordinator.drain()` 或 `queuebit.close()`；可选 CLI 角色宿主收到 SIGTERM 时 drain |
 
 ## 延期能力
 

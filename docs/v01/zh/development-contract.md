@@ -24,6 +24,16 @@
 
 当前本地源码证据明确只覆盖 Runtime M0A 到 M2K。凡是依赖目标 Redis/Sentinel 实机执行、目标 destructive purge/full tombstone 证据、production-mounted scrape/auth/network 证据或 publish evidence 的内容，仍属于 release gate，不是已完成能力。
 
+## 本地文档站
+
+复审和交付时使用 preview 脚本：
+
+```bash
+npm run docs:preview
+```
+
+它会先构建站点，再从 `http://localhost:4180/queuebit/` 提供生成后的页面。中文入口是 `http://localhost:4180/queuebit/zh/`。`npm run docs:dev` 会在 `http://127.0.0.1:4181/queuebit/` 提供同样的生成站点预览，适合本地复审。只有编辑文档时才使用 `npm run docs:edit`；它会把 Rspress hot dev server 固定在 `http://127.0.0.1:4182/queuebit/`，不得作为交付给用户的打开地址。
+
 ## M0 验收
 
 - Queue/Job/Producer/Worker 多进程 claim、delay/retry、timeout、stalled、cancel/replacement。

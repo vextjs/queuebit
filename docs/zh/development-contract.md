@@ -68,7 +68,9 @@ npm run docs:build
 npm run docs:preview
 ```
 
-也可以进入 `website/`，使用 `npm run dev`、`npm run build`、`npm run preview`。根包只代理脚本，文档依赖由 `website/` 管理。
+`npm run docs:preview` 会构建站点并提供稳定交付地址 `http://localhost:4180/queuebit/`；中文页面位于 `http://localhost:4180/queuebit/zh/`。`npm run docs:dev` 会在 `http://127.0.0.1:4181/queuebit/` 提供同样的生成站点预览。`npm run docs:edit` 只用于编辑文档，地址固定为 `http://127.0.0.1:4182/queuebit/`。
+
+也可以进入 `website/`，使用 `npm run dev`、`npm run build`、`npm run preview`。根包会固定本地文档端口，文档依赖由 `website/` 管理。
 
 ## 验收路线
 

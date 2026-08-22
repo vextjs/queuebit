@@ -44,10 +44,11 @@
         "test:redis": "npm run build && node --test tests/redis-integration.test.mjs",
         "test:redis:faults": "npm run build && node --test tests/redis-fault-injection.test.mjs",
         "test:redis:sentinel": "npm run build && node --test tests/redis-sentinel.test.mjs",
-        "docs:dev": "npm --prefix website run dev --",
+        "docs:dev": "npm run docs:build && npm --prefix website run dev",
+        "docs:edit": "npm --prefix website run edit",
         "docs:build": "npm --prefix website run build",
-        "docs:preview": "npm --prefix website run preview --",
-        "docs:validate": "npm --prefix website run validate:scenarios",
+        "docs:preview": "npm run docs:build && npm --prefix website run preview",
+        "docs:validate": "npm --prefix website run validate:scenarios && npm run docs:build && npm --prefix website run validate:links",
         "prepack": "npm run build"
     },
     "keywords": [
@@ -69,6 +70,9 @@
         "ajv": "^8.20.0",
         "ajv-formats": "^3.0.1",
         "typescript": "^5.8.3"
+    },
+    "overrides": {
+        "fast-uri": "3.1.5"
     },
     "peerDependencies": {
         "vextjs": "0.3.26"

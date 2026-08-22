@@ -4,10 +4,12 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "rspress dev",
+    "dev": "rspress preview --port 4181 --host 127.0.0.1",
+    "edit": "rspress dev --port 4182 --host 127.0.0.1",
     "build": "rspress build",
-    "preview": "rspress preview",
-    "validate:scenarios": "node scripts/validate-scenarios.mjs"
+    "preview": "rspress preview --port 4180 --host 127.0.0.1",
+    "validate:scenarios": "node scripts/validate-scenarios.mjs",
+    "validate:links": "node scripts/validate-built-links.mjs"
   },
   "devDependencies": {
     "@rspress/core": "^2.0.15",

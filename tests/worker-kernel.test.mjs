@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createServer } from 'node:net';
 import test from 'node:test';
 import {
   QueuebitError,
@@ -930,6 +931,48 @@ test('worker runner fails jobs when the processor throws', async () => {
   assert.equal(failed?.failedReason?.message, 'provider unavailable');
 });
 
+test('worker runner captures an initial heartbeat failure without an unhandled rejection', async () => {
+  const { config, redis } = createRuntime();
+  const initialFailure = new Error('synthetic initial heartbeat failure');
+  let heartbeatCalls = 0;
+  const unhandledRejections = [];
+  const onUnhandledRejection = reason => unhandledRejections.push(reason);
+  const worker = createQueuebitWorker({
+    config,
+    redis,
+    queue: 'notification',
+    workerId: 'worker-initial-heartbeat',
+    pollIntervalMs: 100,
+    heartbeatIntervalMs: 10_000,
+    heartbeatTtlMs: 20_000,
+    processor: async () => ({ ok: true }),
+    roleRegistry: {
+      async heartbeat() {
+        heartbeatCalls += 1;
+        if (heartbeatCalls === 1) throw initialFailure;
+        return { snapshot: {}, drainRequested: false };
+      },
+      async unregister() {}
+    }
+  });
+
+  process.on('unhandledRejection', onUnhandledRejection);
+  try {
+    worker.start();
+    await waitFor(() => worker.status().lastError?.message === initialFailure.message);
+    await worker.stop({ timeoutMs: 100 });
+    await new Promise(resolve => setTimeout(resolve, 0));
+
+    assert.equal(worker.status().status, 'stopped');
+    assert.deepEqual(unhandledRejections, []);
+  } finally {
+    process.off('unhandledRejection', onUnhandledRejection);
+    if (worker.status().status !== 'stopped') {
+      await worker.stop({ timeoutMs: 100 }).catch(() => {});
+    }
+  }
+});
+
 test('worker runner exposes timeout through AbortSignal and settles the resulting failure', async () => {
   const { config, jobs, redis } = createRuntime();
   await jobs.add('notification', 'send-push', { userId: 'u1' });
@@ -1190,3 +1233,204 @@ test('createQueuebitClient exposes jobs, worker factory, health, metrics, and cl
   assert.equal(worker?.status().status, 'stopped');
   assert.equal(client.health.snapshot().status, 'draining');
 });
+
+test('createQueuebitClient accepts a direct user config', async () => {
+  const { redis } = createRuntime();
+  const client = await createQueuebitClient(
+    {
+      connection: { url: 'redis://127.0.0.1:6379/0' },
+      namespace: 'test:client-direct-config',
+      queues: { notification: {} }
+    },
+    { redis, preflight: false, now: () => initialNow }
+  );
+  try {
+    const job = await client.jobs.add('notification', 'send-push', { userId: 'u1' });
+    assert.equal(job.state, 'waiting');
+  } finally {
+    await client.close();
+  }
+});
+
+test('createQueuebitClient closes an owned Redis connection when preflight rejects', async () => {
+  const server = await createRedisProtocolServer({ redisVersion: '7.1.0' });
+  try {
+    const config = createOwnedConnectionConfig(server.port, 'test:client-preflight-close');
+    await assert.rejects(
+      () => createQueuebitClient({ config }),
+      (error) => error instanceof QueuebitError && error.code === 'QB_REDIS_PREFLIGHT_FAILED'
+    );
+    await waitFor(() => server.commands.some(command => command[0] === 'QUIT'));
+    await waitFor(() => server.closedConnections >= 1);
+  } finally {
+    await server.close();
+  }
+});
+
+test('createQueuebitClient cleans all workers and its owned Redis connection when stop fails', async () => {
+  const server = await createRedisProtocolServer();
+  let client;
+  try {
+    const config = createOwnedConnectionConfig(server.port, 'test:client-close-cleanup');
+    client = await createQueuebitClient({ config, preflight: false });
+    const first = client.createWorker('notification', async () => ({ ok: true }), { workerId: 'close-first' });
+    const second = client.createWorker('notification', async () => ({ ok: true }), { workerId: 'close-second' });
+    const stopFailure = new Error('synthetic worker stop failure');
+    let firstStops = 0;
+    let secondStops = 0;
+    first.stop = async () => {
+      firstStops += 1;
+      throw stopFailure;
+    };
+    second.stop = async () => {
+      secondStops += 1;
+    };
+
+    await assert.rejects(
+      () => client.close(),
+      (error) => error instanceof AggregateError && error.errors.includes(stopFailure)
+    );
+    assert.equal(firstStops, 1);
+    assert.equal(secondStops, 1);
+    await waitFor(() => server.commands.some(command => command[0] === 'QUIT'));
+  } finally {
+    await client?.close().catch(() => {});
+    await server.close();
+  }
+});
+
+function createOwnedConnectionConfig(port, namespace) {
+  return defineQueuebitConfig({
+    namespace,
+    connection: {
+      host: '127.0.0.1',
+      port,
+      connectTimeoutMs: 500,
+      commandTimeoutMs: 500,
+      requestRetryLimit: 0,
+      serverPolicy: { mode: 'strict' }
+    },
+    queues: { notification: {} }
+  });
+}
+
+async function createRedisProtocolServer({ redisVersion = '7.2.5' } = {}) {
+  const commands = [];
+  const sockets = new Set();
+  let closedConnections = 0;
+  const server = createServer(socket => {
+    sockets.add(socket);
+    let pending = Buffer.alloc(0);
+    socket.on('data', chunk => {
+      pending = Buffer.concat([pending, chunk]);
+      const parsed = parseRespCommands(pending);
+      pending = parsed.remainder;
+      for (const command of parsed.commands) {
+        commands.push(command);
+        socket.write(redisResponse(command, redisVersion));
+      }
+    });
+    socket.on('close', () => {
+      sockets.delete(socket);
+      closedConnections += 1;
+    });
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const address = server.address();
+  return {
+    commands,
+    get closedConnections() {
+      return closedConnections;
+    },
+    port: address.port,
+    async close() {
+      for (const socket of sockets) socket.destroy();
+      await new Promise(resolve => server.close(resolve));
+    }
+  };
+}
+
+function parseRespCommands(source) {
+  const commands = [];
+  let offset = 0;
+  while (offset < source.length) {
+    if (source[offset] !== 42) break;
+    const commandStart = offset;
+    const arrayLengthLine = readRespLine(source, offset + 1);
+    if (arrayLengthLine === undefined) break;
+    const arrayLength = Number.parseInt(arrayLengthLine.value, 10);
+    if (!Number.isInteger(arrayLength) || arrayLength < 0) throw new Error('Invalid RESP array length.');
+    offset = arrayLengthLine.next;
+    const command = [];
+    let complete = true;
+    for (let index = 0; index < arrayLength; index += 1) {
+      if (source[offset] !== 36) {
+        complete = false;
+        break;
+      }
+      const lengthLine = readRespLine(source, offset + 1);
+      if (lengthLine === undefined) {
+        complete = false;
+        break;
+      }
+      const length = Number.parseInt(lengthLine.value, 10);
+      const start = lengthLine.next;
+      const end = start + length;
+      if (!Number.isInteger(length) || length < 0 || end + 2 > source.length) {
+        complete = false;
+        break;
+      }
+      command.push(source.toString('utf8', start, end));
+      offset = end + 2;
+    }
+    if (!complete) {
+      offset = commandStart;
+      break;
+    }
+    commands.push(command);
+  }
+  return { commands, remainder: source.subarray(offset) };
+}
+
+function readRespLine(source, offset) {
+  const end = source.indexOf('\r\n', offset, 'utf8');
+  if (end === -1) return undefined;
+  return { value: source.toString('utf8', offset, end), next: end + 2 };
+}
+
+function redisResponse(command, redisVersion) {
+  const name = command[0];
+  if (name === 'HELLO') {
+    return [
+      '%7\r\n',
+      '$6\r\nserver\r\n$5\r\nredis\r\n',
+      '$7\r\nversion\r\n$5\r\n7.2.5\r\n',
+      '$5\r\nproto\r\n:3\r\n',
+      '$2\r\nid\r\n:1\r\n',
+      '$4\r\nmode\r\n$10\r\nstandalone\r\n',
+      '$4\r\nrole\r\n$6\r\nmaster\r\n',
+      '$7\r\nmodules\r\n*0\r\n'
+    ].join('');
+  }
+  if (name === 'INFO') {
+    const section = command[1];
+    if (section === 'server') return redisBulk(`redis_version:${redisVersion}\r\ncluster_enabled:0\r\n`);
+    if (section === 'persistence') return redisBulk('aof_enabled:1\r\n');
+    if (section === 'replication') return redisBulk('role:master\r\n');
+  }
+  if (name === 'CONFIG' && command[1] === 'GET') {
+    if (command[2] === 'maxmemory-policy') return redisMap({ 'maxmemory-policy': 'noeviction' });
+    if (command[2] === 'save') return redisMap({ save: '60 1' });
+  }
+  if (name === 'ROLE') return '*3\r\n$6\r\nmaster\r\n:0\r\n*0\r\n';
+  return '+OK\r\n';
+}
+
+function redisBulk(value) {
+  return `$${Buffer.byteLength(value)}\r\n${value}\r\n`;
+}
+
+function redisMap(entries) {
+  const pairs = Object.entries(entries);
+  return `%${pairs.length}\r\n${pairs.map(([key, value]) => redisBulk(key) + redisBulk(value)).join('')}`;
+}

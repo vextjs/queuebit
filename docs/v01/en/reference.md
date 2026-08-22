@@ -24,13 +24,13 @@ This page records the intended stable public usage for Queuebit v0.1. Whether a 
 
 | Domain | Stable entry |
 |---|---|
-| Create client | `createQueuebitClient({ config, logger? })` |
+| Create client | `createQueuebitClient(config, options?)`; compatible `createQueuebitClient({ config, logger? })` |
 | Static config | `defineQueuebitConfig()` |
 | Runtime registration | `defineQueuebitRuntime()` plus named source/mapper/processor/completion helpers |
 | Direct jobs | `queuebit.jobs.add/addBulk/get/list/cancel/retryFailed` |
 | BatchRun | `queuebit.runs.start/get/list/listFailures/pause/resume/cancel/retryFailed` |
 | Completion | `queuebit.completions.get/list/retry` |
-| Lifecycle | `queuebit.close()` and background-role SIGTERM drain |
+| Lifecycle | Host calls `worker.drain()`, `coordinator.drain()`, or `queuebit.close()`; optional CLI role host drains on SIGTERM |
 
 ## Deferred capabilities
 

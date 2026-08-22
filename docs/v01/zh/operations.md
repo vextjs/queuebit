@@ -125,4 +125,4 @@ npx queuebit worker drain --queue notification --worker-id worker-a --reason rol
 npx queuebit coordinator drain --coordinator-id coordinator-a --reason rolling-release --config queuebit.config.ts
 ```
 
-远程 drain 命令只是告诉目标进程“准备退出”，不会等它真的停完。收到 SIGTERM 时，Worker 会停止领取新 job，Coordinator 会停止读取 source 和派发新 batch，并等待当前 Redis 原子操作结束。进程关闭时使用自身配置的 `--drain-timeout-ms`；超时后停止续租并非零退出，不会伪造业务成功或失败状态。
+远程 drain 命令只是告诉目标进程“准备退出”，不会等它真的停完。SDK 服务宿主在自己的 shutdown 生命周期调用 `worker.drain()`、`coordinator.drain()` 或 `queuebit.close()`；Queuebit 不会安装 signal handler。只有可选 CLI 角色宿主收到 SIGTERM 时自动 drain。每种宿主使用自己的 drain timeout；超时后停止续租并报告失败，不会伪造业务成功或失败状态。

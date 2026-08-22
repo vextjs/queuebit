@@ -5,6 +5,7 @@ import {
   createQueuebitClient,
   createQueuebitCompletionsApi,
   createQueuebitCoordinator,
+  createQueuebitRuntimeProcessor,
   createQueuebitKeyBuilder,
   createQueuebitJobsApi,
   createQueuebitRunsApi,
@@ -28,6 +29,9 @@ class FakeRedisCoordinatorClient {
     if (name === 'HSET') return this.hset(command);
     if (name === 'HDEL') return this.hdel(command);
     if (name === 'HGETALL') return { ...(this.hashes.get(command[1]) ?? {}) };
+    if (name === 'ZADD') return this.zadd(command[1], command[2], command[3]);
+    if (name === 'ZREM') return this.zrem(command[1], command[2]);
+    if (name === 'DEL') return this.del(command[1]);
     if (name === 'ZRANGEBYSCORE') return this.zrangeByScore(command);
     throw new Error(`Unexpected command ${name}`);
   }
@@ -735,6 +739,14 @@ class FakeRedisCoordinatorClient {
     return deleted;
   }
 
+  del(key) {
+    let deleted = 0;
+    for (const store of [this.hashes, this.strings, this.zsets, this.lists]) {
+      if (store.delete(key)) deleted += 1;
+    }
+    return deleted;
+  }
+
   zadd(key, score, member) {
     const zset = this.zsets.get(key) ?? new Map();
     zset.set(member, Number(score));
@@ -827,8 +839,8 @@ function createCoordinatorRuntime(overrides = {}) {
         async freeze({ input }) {
           return { boundary: { tenantId: input.tenantId, upperId: 3 }, cursor: 0, totalRecords: 3 };
         },
-        async load({ cursor, limit }) {
-          if (overrides.load) return overrides.load({ cursor, limit });
+        async load({ cursor, limit, signal }) {
+          if (overrides.load) return overrides.load({ cursor, limit, signal });
           const page = sourceRecords.filter(record => record.id > cursor).slice(0, limit);
           return {
             records: page,
@@ -1900,3 +1912,230 @@ test('coordinator keeps a single active owner for one run lease', async () => {
   const result = await firstAdvance;
   assert.equal(result.status, 'source_exhausted');
 });
+
+test('coordinator disposes linked abort listeners while preserving source cancellation', async () => {
+  const signal = createTrackedAbortSignal();
+  const { createCoordinator, runs } = createCoordinatorRuntime();
+  const coordinator = createCoordinator('coord-abort-cleanup');
+
+  for (let index = 0; index < 3; index += 1) {
+    const run = await runs.start('receipt-campaign', {
+      input: { tenantId: `tenant-${index}` },
+      idempotencyKey: `campaign:abort-cleanup:${index}`
+    });
+    await coordinator.advanceRun(run.id, { signal });
+    assert.equal(signal.listenerCount, 0);
+  }
+
+  const cancellation = new Error('caller cancelled source loading');
+  const cancellableSignal = createTrackedAbortSignal();
+  let loadStarted = false;
+  const cancellable = createCoordinatorRuntime({
+    load: ({ signal: sourceSignal }) => new Promise((_resolve, reject) => {
+      loadStarted = true;
+      sourceSignal.addEventListener('abort', () => reject(cancellation), { once: true });
+    })
+  });
+  const run = await cancellable.runs.start('receipt-campaign', {
+    input: { tenantId: 'tenant-cancel' },
+    idempotencyKey: 'campaign:abort-cleanup:cancel'
+  });
+  const advance = cancellable.createCoordinator('coord-abort-cancel').advanceRun(run.id, {
+    signal: cancellableSignal
+  });
+  await waitFor(() => loadStarted && cancellableSignal.listenerCount === 1);
+  cancellableSignal.abort(cancellation);
+
+  await assert.rejects(advance, error => error === cancellation);
+  assert.equal(cancellableSignal.listenerCount, 0);
+});
+
+test('runtime processor dispatcher is available to application code and rejects unknown jobs', async () => {
+  const runtime = defineQueuebitRuntime({
+    sources: {},
+    mappers: {},
+    processors: {
+      'send-receipt': async job => ({ delivered: job.data.orderId })
+    }
+  });
+  const processor = createQueuebitRuntimeProcessor(runtime);
+  const context = {
+    queue: 'notification',
+    workerId: 'worker-code-host',
+    jobId: 'job-1',
+    attempt: 1,
+    signal: new AbortController().signal
+  };
+
+  assert.deepEqual(
+    await processor({ id: 'job-1', queue: 'notification', name: 'send-receipt', data: { orderId: 'ord-1' } }, context),
+    { delivered: 'ord-1' }
+  );
+  await assert.rejects(
+    () => processor({ id: 'job-2', queue: 'notification', name: 'unknown', data: {} }, context),
+    error => error instanceof QueuebitError && error.code === 'QB_CONFIG_HANDLER_NOT_REGISTERED'
+  );
+});
+
+test('CoordinatorRunner lets application code advance runs and honor remote drain requests', async () => {
+  const { config, redis, runtime } = createCoordinatorRuntime();
+  const client = await createQueuebitClient({ config, redis, preflight: false });
+  const runner = client.createCoordinatorRunner(runtime, {
+    coordinatorId: 'code-host',
+    pollIntervalMs: 2,
+    heartbeatIntervalMs: 2,
+    heartbeatTtlMs: 20
+  });
+  try {
+    const run = await client.runs.start('receipt-campaign', {
+      input: { tenantId: 'tenant-code-host' },
+      idempotencyKey: 'campaign:code-host'
+    });
+    runner.start();
+
+    await waitFor(async () => (await client.roles.get({
+      role: 'coordinator',
+      domain: config.scheduler.domain,
+      identity: 'code-host'
+    })) !== null);
+    await waitFor(async () => (await client.runs.get(run.id))?.executionState === 'running');
+    assert.equal(runner.status().status, 'running');
+
+    await client.roles.requestDrain({
+      role: 'coordinator',
+      domain: config.scheduler.domain,
+      identity: 'code-host',
+      reason: 'deploy'
+    });
+    await waitFor(() => runner.status().status === 'stopped', 500);
+    assert.equal(await client.roles.get({
+      role: 'coordinator',
+      domain: config.scheduler.domain,
+      identity: 'code-host'
+    }), null);
+  } finally {
+    await client.close({ timeoutMs: 100 });
+  }
+});
+
+test('CoordinatorRunner reports advance failures instead of swallowing them', async () => {
+  const failures = [];
+  const { config, redis, runtime } = createCoordinatorRuntime({
+    load: async () => {
+      throw new Error('source temporarily unavailable');
+    }
+  });
+  const client = await createQueuebitClient({ config, redis, preflight: false });
+  const runner = client.createCoordinatorRunner(runtime, {
+    coordinatorId: 'error-host',
+    pollIntervalMs: 2,
+    onError: event => failures.push(event)
+  });
+  try {
+    await client.runs.start('receipt-campaign', {
+      input: { tenantId: 'tenant-error-host' },
+      idempotencyKey: 'campaign:error-host'
+    });
+    runner.start();
+
+    await waitFor(() => failures.some(event => event.operation === 'advance'));
+    const failure = runner.status().lastError;
+    assert.equal(failure?.operation, 'advance');
+    assert.match(failure?.error.message ?? '', /source temporarily unavailable/);
+  } finally {
+    await client.close({ timeoutMs: 100 });
+  }
+});
+
+test('CoordinatorRunner preserves the primary failure when its error observer throws', async () => {
+  const { config, redis, runtime } = createCoordinatorRuntime({
+    load: async () => {
+      throw new Error('source temporarily unavailable');
+    }
+  });
+  const client = await createQueuebitClient({ config, redis, preflight: false });
+  const runner = client.createCoordinatorRunner(runtime, {
+    coordinatorId: 'error-observer-host',
+    pollIntervalMs: 2,
+    onError: () => {
+      throw new Error('application logger unavailable');
+    }
+  });
+  try {
+    await client.runs.start('receipt-campaign', {
+      input: { tenantId: 'tenant-error-observer-host' },
+      idempotencyKey: 'campaign:error-observer-host'
+    });
+    runner.start();
+
+    await waitFor(() => runner.status().lastError?.operation === 'advance');
+    const failure = runner.status().lastError;
+    assert.equal(failure?.operation, 'advance');
+    assert.match(failure?.error.message ?? '', /source temporarily unavailable/);
+  } finally {
+    await client.close({ timeoutMs: 100 });
+  }
+});
+
+test('CoordinatorRunner keeps draining state after a timeout and can finish later', async () => {
+  let releaseLoad;
+  const loadBlocked = new Promise(resolve => {
+    releaseLoad = resolve;
+  });
+  const { config, redis, runtime } = createCoordinatorRuntime({
+    load: async ({ cursor }) => {
+      await loadBlocked;
+      return { records: [], nextCursor: cursor, exhausted: true };
+    }
+  });
+  const client = await createQueuebitClient({ config, redis, preflight: false });
+  const runner = client.createCoordinatorRunner(runtime, {
+    coordinatorId: 'drain-host',
+    pollIntervalMs: 2
+  });
+  try {
+    await client.runs.start('receipt-campaign', {
+      input: { tenantId: 'tenant-drain-host' },
+      idempotencyKey: 'campaign:drain-host'
+    });
+    runner.start();
+    await waitFor(() => runner.status().activeRuns === 1);
+
+    await assert.rejects(
+      () => runner.drain({ timeoutMs: 1 }),
+      error => error instanceof QueuebitError && error.code === 'QB_COORDINATOR_DRAIN_TIMEOUT'
+    );
+    assert.equal(runner.status().status, 'draining');
+
+    releaseLoad();
+    await waitFor(() => runner.status().activeRuns === 0);
+    await runner.stop({ timeoutMs: 100 });
+    assert.equal(runner.status().status, 'stopped');
+  } finally {
+    releaseLoad?.();
+    await client.close({ timeoutMs: 100 }).catch(() => undefined);
+  }
+});
+
+function createTrackedAbortSignal() {
+  const listeners = new Set();
+  return {
+    aborted: false,
+    reason: undefined,
+    get listenerCount() {
+      return listeners.size;
+    },
+    addEventListener(type, listener) {
+      if (type === 'abort') listeners.add(listener);
+    },
+    removeEventListener(type, listener) {
+      if (type === 'abort') listeners.delete(listener);
+    },
+    abort(reason) {
+      if (this.aborted) return;
+      this.aborted = true;
+      this.reason = reason;
+      for (const listener of [...listeners]) listener();
+    }
+  };
+}

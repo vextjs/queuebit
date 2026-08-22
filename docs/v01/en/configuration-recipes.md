@@ -2,24 +2,26 @@
 
 <span class="manual-label">Production operations · start from the small config</span>
 
-Most projects start with two files: `queuebit.config.ts` for Redis, namespace, queues, and Worker defaults; `queuebit.runtime.ts` for processor registration first. API processes submit work, Worker processes execute it, and the CLI is only a validation and debugging tool. It is not required as the runtime entrypoint. Sources, mappers, and completion handlers are needed only for database batching.
+For one first background job, follow [Quick start](./quick-start.md) with an ordinary config object and a Worker business function. Adopt the `queuebit.config.ts` and `queuebit.runtime.ts` split here when you need the CLI, multiple Worker/Coordinator service hosts, BatchRun, or centralized configuration governance. API processes submit work, Worker processes execute it, and the CLI is only a validation and debugging tool. It is not required as the runtime entrypoint. Sources, mappers, and completion handlers are needed only for database batching.
 
 ## Choose Your Situation
 
 | What you need | Configure first | Ignore for now |
 |---|---|---|
-| Run one background job locally or inside a Node framework | `connection`, `namespace`, `queues` | Sentinel, retention, BatchRun, CI |
+| Run one background job locally or inside a Node framework | `connection`, `queues` | Sentinel, retention, BatchRun, CI |
 | Run multiple Workers in production | Add `workerDefaults`, Redis strict policy, health checks | BatchRun definition |
 | Page many database records into jobs | Add `batchRuns`, plus source/mapper/completion in runtime | Redis internals |
 
-For a normal Node, Fastify, Nest, or vext integration, create the client when the service starts, register runtime functions in a separate worker script, and let your process manager or container run the Worker.
+For a normal Node, Fastify, Nest, or vext integration, create the client when the service starts, pass the business function in a separate worker script, and let your process manager or container run the Worker.
 
-## Files, Startup Overrides, and Runtime
+Queuebit derives a stable isolated namespace from the application package name by default. When multiple deployments of the same package intentionally share Redis, set a distinct `QUEUEBIT_NAMESPACE` for each deployment.
 
-Most projects use the file defaults. Use CLI flags or startup overrides only when one process needs a temporary concurrency or drain-timeout override.
+## Advanced Files, Startup Overrides, and Runtime
 
-1. Explicit process flags, such as `--concurrency 12`.
-2. Runtime overrides passed while creating a client or role.
+Most projects use the file defaults. Pass startup options when a Worker or Coordinator service host needs a temporary concurrency or drain-timeout override. Use optional CLI flags only when the CLI is deliberately the service host.
+
+1. Runtime overrides passed while creating a client or role.
+2. Explicit process flags when the CLI is deliberately the service host, such as `--concurrency 12`.
 3. Queue backpressure or BatchRun-local configuration.
 4. Root Worker, Scheduler, retention, limits, deduplication, and observability defaults.
 5. Queuebit built-in defaults.
@@ -34,7 +36,6 @@ import { defineQueuebitConfig } from 'queuebit';
 
 export default defineQueuebitConfig({
   connection: { url: 'redis://127.0.0.1:6379/0' },
-  namespace: 'dev:demo',
   queues: { notification: {} }
 });
 ```

@@ -5,6 +5,18 @@
 
 # Unreleased
 
+## 2026-08-13
+
+- **Automatic application namespace isolation**: replaced the shared `default` namespace fallback with stable application identity resolution: explicit `namespace`, then `QUEUEBIT_NAMESPACE`, then a hashed nearest `package.json` name. The Quick Start no longer requires a namespace field; upgrading applications that previously relied on `default` must keep API and Worker on an explicit `default` namespace until existing jobs are drained or migrated.
+
+## 2026-08-05
+
+- **Code-first runtime and manual repair**: added application-owned Worker and Coordinator lifecycle helpers, a Redis-backed CoordinatorRunner with drain/error contracts, and a source-backed vext batch example that injects real business repositories and derives tenant identity from the authenticated request. Reworked the user manual so normal task execution starts from application code while CLI role commands remain optional operator compatibility; repaired the mobile documentation sidebar with an accessible overlay controller and added validation against hard-coded BatchRun identities and stale app facade snippets.
+
+## 2026-07-28
+
+- **Docs local preview stability**: pinned the documentation preview script to build before serving `127.0.0.1:4180`, made `docs:dev` build and serve the generated site on `127.0.0.1:4181`, moved hot editing to `docs:edit` on `127.0.0.1:4182`, documented the stable English/Chinese local URLs, and added validator checks so local docs handoff cannot silently drift back to auto-selected ports or broken dev deep links.
+
 ## 2026-07-24
 
 - **Runtime M2K Completion retention window**: added independent `retention.completionEvents.ageMs/maxCount` config with default parity to `terminalRuns`, a Redis Completion detail index maintained by Run cancellation and Coordinator completion creation paths, `retention.plan()` / `retention.purge()` completion-window logic based on that detail index, and targeted tests proving age/maxCount tombstones stop consuming the detail window while `completions.list/get` retain tombstone identity through the stable event index.

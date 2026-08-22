@@ -1,4 +1,8 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import test from 'node:test';
 import {
   QueuebitError,
@@ -33,6 +37,74 @@ test('defineQueuebitConfig applies defaults without mutating input', () => {
   assert.deepEqual(config.retention.completionEvents, { ageMs: 2_592_000_000, maxCount: 10_000 });
   assert.equal(config.deduplication.jobKeyTtlMs, 604_800_000);
   assert.equal(config.observability.metrics.prefix, 'queuebit_');
+});
+
+test('defineQueuebitConfig derives a stable namespace from the application package name', () => {
+  const original = process.env.QUEUEBIT_NAMESPACE;
+  delete process.env.QUEUEBIT_NAMESPACE;
+  try {
+    const config = defineQueuebitConfig({ queues: { notification: {} } });
+    const digest = createHash('sha256').update('queuebit').digest('hex').slice(0, 12);
+
+    assert.equal(config.namespace, `app:queuebit:${digest}`);
+  } finally {
+    if (original === undefined) delete process.env.QUEUEBIT_NAMESPACE;
+    else process.env.QUEUEBIT_NAMESPACE = original;
+  }
+});
+
+test('defineQueuebitConfig finds and normalizes the nearest scoped package name', () => {
+  const originalDirectory = process.cwd();
+  const originalNamespace = process.env.QUEUEBIT_NAMESPACE;
+  const packageDirectory = mkdtempSync(join(tmpdir(), 'queuebit-namespace-'));
+  const nestedDirectory = join(packageDirectory, 'worker');
+  try {
+    writeFileSync(join(packageDirectory, 'package.json'), '{"name":"@queuebit/demo.app"}');
+    mkdirSync(nestedDirectory);
+    process.chdir(packageDirectory);
+    process.chdir(nestedDirectory);
+    delete process.env.QUEUEBIT_NAMESPACE;
+
+    const digest = createHash('sha256').update('@queuebit/demo.app').digest('hex').slice(0, 12);
+    assert.equal(
+      defineQueuebitConfig({}).namespace,
+      `app:queuebit-demo-app:${digest}`
+    );
+  } finally {
+    process.chdir(originalDirectory);
+    if (originalNamespace === undefined) delete process.env.QUEUEBIT_NAMESPACE;
+    else process.env.QUEUEBIT_NAMESPACE = originalNamespace;
+    rmSync(packageDirectory, { recursive: true, force: true });
+  }
+});
+
+test('defineQueuebitConfig prefers explicit namespace over QUEUEBIT_NAMESPACE', () => {
+  const original = process.env.QUEUEBIT_NAMESPACE;
+  process.env.QUEUEBIT_NAMESPACE = 'environment:queuebit';
+  try {
+    assert.equal(
+      defineQueuebitConfig({ namespace: 'explicit:queuebit' }).namespace,
+      'explicit:queuebit'
+    );
+    assert.equal(defineQueuebitConfig({}).namespace, 'environment:queuebit');
+  } finally {
+    if (original === undefined) delete process.env.QUEUEBIT_NAMESPACE;
+    else process.env.QUEUEBIT_NAMESPACE = original;
+  }
+});
+
+test('defineQueuebitConfig rejects an invalid QUEUEBIT_NAMESPACE', () => {
+  const original = process.env.QUEUEBIT_NAMESPACE;
+  process.env.QUEUEBIT_NAMESPACE = 'contains.dot';
+  try {
+    assert.throws(
+      () => defineQueuebitConfig({}),
+      (error) => error instanceof QueuebitError && error.code === 'QB_CONFIG_INVALID'
+    );
+  } finally {
+    if (original === undefined) delete process.env.QUEUEBIT_NAMESPACE;
+    else process.env.QUEUEBIT_NAMESPACE = original;
+  }
 });
 
 test('defineQueuebitConfig accepts an independent completion retention window', () => {

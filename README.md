@@ -8,7 +8,7 @@ The basic flow is small:
 2. Pass Redis configuration.
 3. Register a processor.
 4. Call `jobs.add()` from your Web/API code.
-5. Run one or more Workers.
+5. Start one or more Worker objects from your service code.
 
 Use BatchRun only when you need to page many database records, create jobs from each page, record batch/final results, and recover progress after failures.
 
@@ -37,11 +37,29 @@ const job = await queuebit.jobs.add(
 return { jobId: job.id, state: job.state };
 ```
 
-Run the Worker separately:
+Start the Worker from the service process you already manage:
 
-```bash
-npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification
+```ts
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+const queuebit = await createQueuebitClient({ config });
+const worker = queuebit.createWorker(
+  'notification',
+  createQueuebitRuntimeProcessor(runtime),
+  { workerId: 'receipt-worker-a', concurrency: 4 }
+);
+worker.start();
+
+// Call this from your process manager or framework shutdown hook.
+await queuebit.close({ timeoutMs: 60_000 });
 ```
+
+Queuebit does not start a process or bind signal handlers when this module is imported. You choose how the code is hosted. The CLI remains available for optional configuration checks and operator inspection.
 
 ## Documentation
 
@@ -54,6 +72,14 @@ The bilingual user manual lives in `docs/v01`:
 - [Production deployment](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/production-deployment.md)
 - [Failure runbooks](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/en/failure-runbooks.md)
 - [中文用户手册](https://github.com/devcodex-labs/queuebit/blob/main/docs/v01/zh/index.md)
+
+Run the local documentation site with a stable port:
+
+```bash
+npm run docs:preview
+```
+
+Open `http://localhost:4180/queuebit/` for English or `http://localhost:4180/queuebit/zh/` for Chinese. `docs:preview` builds the site first and then serves the generated pages from `127.0.0.1:4180`. `npm run docs:dev` serves the same generated-site behavior on `127.0.0.1:4181` for local review. Use `npm run docs:edit` only when editing docs, which runs the Rspress hot dev server on `127.0.0.1:4182`.
 
 ## Choose a Path
 

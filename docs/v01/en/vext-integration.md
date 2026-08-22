@@ -13,8 +13,8 @@ For a first vext integration, call `app.queuebit.jobs.add()` from a route and ru
 |---|---|---|
 | `src/plugins/queuebit.ts` | Creates the vext plugin and injects `app.queuebit` | The Web process is only a Producer |
 | vext route | Authenticates, validates input, and calls `app.queuebit.jobs.add` | Derive tenant on the server |
-| Worker process | Runs business processors | Started separately, not by `vext start` |
-| Coordinator process | Advances database pages only for BatchRun | Not needed for normal jobs |
+| Worker service | Runs business processors through `client.createWorker()` | Started separately, not by `vext start` |
+| Coordinator service | Advances database pages through `client.createCoordinatorRunner()` | Not needed for normal jobs |
 | metrics/readiness | Mounted and protected by the vext app | Queuebit core starts no hidden HTTP server |
 
 ```mermaid
@@ -142,29 +142,63 @@ Use this only for [database batch processing](./batch-runs.md). Both the first r
 | Redis unavailable or strict policy failed | 503 | Do not claim work was accepted |
 | Unknown error | 500 | Do not expose stack, cause, or full input |
 
-## 5. Start Web and Worker Separately
+## 5. Start Web, Worker, and Coordinator from Code
 
 ```bash title="Web / Producer"
 vext start
 ```
 
-```bash title="Worker"
-npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification
+Create the role services in code. A vext app does not need to own them; the same modules can run in a separate Node process, container, or service framework selected by your deployment.
+
+```ts title="src/services/queuebit-worker.ts"
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from '../../queuebit.config.js';
+import runtime from '../../queuebit.runtime.js';
+
+export async function startQueuebitWorker(workerId: string) {
+  const client = await createQueuebitClient({ config });
+  const worker = client.createWorker(
+    'notification',
+    createQueuebitRuntimeProcessor(runtime),
+    { workerId, concurrency: 4 }
+  );
+  worker.start();
+  return { worker, stop: () => client.close({ timeoutMs: 60_000 }) };
+}
 ```
 
-Start a Coordinator only when you use BatchRun:
+Start a CoordinatorRunner only for BatchRun definitions:
 
-```bash title="Coordinator · BatchRun only"
-npx queuebit coordinator start --config queuebit.config.ts --runtime queuebit.runtime.ts
+```ts title="src/services/queuebit-coordinator.ts"
+import { createQueuebitClient } from 'queuebit';
+import config from '../../queuebit.config.js';
+import runtime from '../../queuebit.runtime.js';
+
+export async function startQueuebitCoordinator(
+  coordinatorId: string,
+  logger: { error(context: unknown, message: string): void }
+) {
+  const client = await createQueuebitClient({ config });
+  const coordinator = client.createCoordinatorRunner(runtime, {
+    coordinatorId,
+    concurrency: 2,
+    onError: event => logger.error({ event }, 'Queuebit coordinator error')
+  });
+  coordinator.start();
+  return { coordinator, stop: () => client.close({ timeoutMs: 60_000 }) };
+}
 ```
 
-v0.1 users should use the core CLI role commands above. Do not look for vext-specific Worker or Coordinator startup paths until a future version explicitly ships them.
+Call the returned `stop()` function from the lifecycle of your own host. It is safe to operate multiple Worker hosts and multiple CoordinatorRunner hosts against the same Redis namespace; roles heartbeat independently and Run leases fence concurrent advancement. CLI role commands remain optional compatibility tools, not a vext integration requirement.
 
 ## 6. Reload and Shutdown
 
 - Web reload invokes plugin `onClose` and releases the current client connection.
 - Stopping Web does not cancel durable jobs or Runs in Redis.
-- Worker and Coordinator follow their own SIGTERM drain lifecycle, independent from Web reload.
+- Worker and Coordinator drain only when their service host calls `client.close()` or a remote role drain is observed; Queuebit does not register hidden SIGTERM handlers.
 - Importing `queuebit.runtime.ts` opens no database or HTTP connection; a role activates only the factories it needs.
 
 ## 7. Production Acceptance

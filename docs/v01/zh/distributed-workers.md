@@ -28,15 +28,27 @@ flowchart LR
 
 所有实例使用同一个 Redis、`namespace` 和 queue name。直接 job 只需要 Producer + Worker；只有使用 `runs.start` 批量处理数据库记录时，才需要 Coordinator 推进 Run。
 
-```bash
-npx queuebit worker start \
-  --queue notification \
-  --config queuebit.config.ts \
-  --runtime queuebit.runtime.ts \
-  --concurrency 8
+```ts title="worker-service.ts"
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+export async function startWorker(workerId: string) {
+  const client = await createQueuebitClient({ config });
+  const worker = client.createWorker(
+    'notification',
+    createQueuebitRuntimeProcessor(runtime),
+    { workerId, concurrency: 8, drainTimeoutMs: 60_000 }
+  );
+  worker.start();
+  return { worker, stop: () => client.close({ timeoutMs: 60_000 }) };
+}
 ```
 
-同一条命令可以在多台机器或多个容器里运行。给每个实例配置不同的进程 identity/hostname 日志字段，方便排查。
+在多台机器或多个容器中用不同 `workerId` 运行同一段服务代码。部署命令和进程管理器由你决定；Queuebit API 只管理 Worker 生命周期。
 
 ## 并发怎么算
 
@@ -93,7 +105,7 @@ npx queuebit worker drain \
   --config queuebit.config.ts
 ```
 
-远程 drain 命令只告诉这个 Worker 停止拿新 job。Worker 看到请求后，会用自己启动时配置的 drain timeout 等 active handler 收尾，例如 `worker start --drain-timeout-ms 60000`。如果超时，Queuebit 不会把 job 标成成功或失败；续租停止，进程非零退出，其他 Worker 等 lease 过期后接手。
+远程 drain 命令只告诉这个 Worker 停止拿新 job。Worker 看到请求后，传给 `client.createWorker()` 的 `drainTimeoutMs` 决定 active handler 最多可收尾多久。服务宿主也可以直接调用 `worker.drain({ timeoutMs: 60_000 })` 或 `client.close({ timeoutMs: 60_000 })`。如果超时，Queuebit 不会把 job 标成成功或失败；续租停止，由宿主决定退出策略，其他 Worker 等 lease 过期后接手。
 
 滚动发布顺序：
 

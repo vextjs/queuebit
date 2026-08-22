@@ -2,13 +2,15 @@
 
 <span class="manual-label">Reference · find methods by task</span>
 
-Use this page when you already need a method name or return shape. For first integration, start with [Quick start](./quick-start.md): create a client, pass Redis config, register a processor, then enqueue one normal job with `jobs.add`. `runs.start` is the database batch entrypoint; look it up when you need it.
+Use this page when you already need a method name or return shape. For first integration, start with [Quick start](./quick-start.md): create a client, pass Redis config, register a processor, create a Worker from application code, then enqueue one normal job with `jobs.add`. `runs.start` is the database batch entrypoint and `createCoordinatorRunner` advances it from application code. CLI commands are optional operations tooling, not the normal runtime path.
 
 ## Find the API by task
 
 | Need | Use these methods |
 |---|---|
-| Create a Queuebit client | `createQueuebitClient({ config, logger? })` |
+| Create a Queuebit client | `createQueuebitClient(config, options?)` or `createQueuebitClient({ config, logger? })` |
+| Start a normal Worker from service code | `queuebit.createWorker(queue, createQueuebitRuntimeProcessor(runtime), options).start()` |
+| Start a BatchRun Coordinator from service code | `queuebit.createCoordinatorRunner(runtime, options).start()` |
 | Enqueue one background job | `queuebit.jobs.add(queue, name, data, options?)` |
 | Enqueue many background jobs | `queuebit.jobs.addBulk(entries)` |
 | Inspect, cancel, or retry Jobs | `queuebit.jobs.get/list/cancel/retryFailed` |
@@ -22,15 +24,22 @@ Use this page when you already need a method name or return shape. For first int
 ## Create one long-lived client
 
 ```ts
-import config from './queuebit.config.js';
 import { createQueuebitClient } from 'queuebit';
 
-const queuebit = await createQueuebitClient({ config, logger });
+const queuebit = await createQueuebitClient({
+  connection: { url: process.env.QUEUEBIT_REDIS_URL },
+  queues: { notification: {} }
+}, { logger });
 ```
+
+Without an explicit `namespace`, Queuebit derives the application namespace from `QUEUEBIT_NAMESPACE` or the nearest `package.json` name.
 
 | Method | Semantics | Error/boundary |
 |---|---|---|
-| `createQueuebitClient({config, logger?})` | Create one application-level long-lived client | Reject static config or Redis preflight failure |
+| `createQueuebitClient(config, options?)` | Create one application-level long-lived client from an ordinary config object | Reject static config or Redis preflight failure |
+| `createQueuebitClient({config, logger?})` | Compatible options form for one application-level long-lived client | Reject static config or Redis preflight failure |
+| `queuebit.createWorker(queue, processor, options?)` | Construct a Worker owned by this client | Call `start()` from the application's Worker host |
+| `queuebit.createCoordinatorRunner(runtime, options?)` | Construct a BatchRun CoordinatorRunner owned by this client | Call `start()` only in a Coordinator host; it is not needed for direct jobs |
 | `queuebit.close()` | Release this client's resources | Call at script end or application `onClose` |
 | `queuebit.health.snapshot()` | Return a `HealthSnapshot` | Does not pretend to be cluster health |
 | `queuebit.metrics.collect()` | Return structured samples for this process | Does not pretend to be a cluster aggregate |
@@ -42,6 +51,54 @@ const queuebit = await createQueuebitClient({ config, logger });
 | `queuebit.capacity.snapshot()` | Read declared queue counters and watermarks | Read-only; does not scan arbitrary keys |
 
 Do not close the client after each HTTP request or each add/start. A vext plugin closes once in `onClose`.
+
+## Start background services from application code
+
+```ts
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+const queuebit = await createQueuebitClient({ config });
+
+const worker = queuebit.createWorker(
+  'notification',
+  createQueuebitRuntimeProcessor(runtime),
+  { workerId: 'worker-a', concurrency: 8, drainTimeoutMs: 60_000 }
+);
+worker.start();
+
+// Only create this in the BatchRun Coordinator service host.
+const coordinator = queuebit.createCoordinatorRunner(runtime, {
+  coordinatorId: 'coordinator-a',
+  concurrency: 2,
+  onError: event => console.error('Queuebit coordinator error', event)
+});
+coordinator.start();
+
+// Call from your framework lifecycle or process-manager shutdown hook.
+await queuebit.close({ timeoutMs: 60_000 });
+```
+
+Use separate Worker and Coordinator service hosts in production; the snippet places both calls together only to show the symmetric API. The host owns process signals. Queuebit has no import-time side effects and does not register a signal handler.
+
+`QueuebitCoordinatorRunner` has `idle`, `running`, `draining`, and `stopped` states. `start()` begins the heartbeat and one polling loop. Each tick delivers up to `completionLimit` due completion events, lists runnable Runs, and advances up to `concurrency` Runs. `status()` exposes `activeRuns`, the role snapshot, and `lastError`; `onError` receives the same heartbeat, completion-delivery, or advance failure immediately.
+
+| CoordinatorRunner option | Default | Meaning |
+|---|---:|---|
+| `coordinatorId` | generated | Stable role identity for heartbeats and remote drain |
+| `concurrency` | 1 | Max runnable Runs advanced per tick |
+| `leaseMs` / `sourceTimeoutMs` | 30000 / 30000 | Run-claim lease and one source load timeout |
+| `pollIntervalMs` | `scheduler.pollIntervalMs` | Delay before the next tick |
+| `completionLimit` | 25 | Due completion events per tick; integer 1 through 100 |
+| `domain` | `scheduler.domain` | Role heartbeat scope |
+| `heartbeatIntervalMs` / `heartbeatTtlMs` | scheduler values | TTL must be greater than interval |
+| `drainTimeoutMs` | `scheduler.drainTimeoutMs` | Default wait for `drain()` / `stop()` |
+
+`drain()` stops new polling, writes a draining role heartbeat, and waits for current work. A remote `coordinator drain` command is observed through that heartbeat. If the deadline expires, it throws `QB_COORDINATOR_DRAIN_TIMEOUT` and the runner remains `draining`; retry `stop()` once active work has settled. Retry that runner directly before calling `queuebit.close()`: client close is terminal cleanup, drains client-created CoordinatorRunners before Workers, and closes an owned Redis connection even when it reports a cleanup failure.
 
 <a id="public-api-contract"></a>
 ## Public input and return types
@@ -625,13 +682,15 @@ await queuebit.jobs.retryFailed(failedJobId, {
 
 ### `runs.start(definition, request)`
 
+Call this from a server-owned application service. `actor` is the authenticated identity and `request.paidBefore` is already validated business input; Queuebit does not resolve either value from a browser request or the database for you.
+
 ```ts
 const run = await queuebit.runs.start('receipt-campaign', {
   input: {
-    tenantId: 'tenant-42',
-    paidBefore: '2026-07-15T00:00:00.000Z'
+    tenantId: actor.tenantId,
+    paidBefore: request.paidBefore
   },
-  idempotencyKey: 'receipt-campaign:tenant-42:2026-07-15'
+  idempotencyKey: `receipt:${actor.tenantId}:${request.paidBefore}`
 });
 
 console.log(run.id, run.deduplicated);

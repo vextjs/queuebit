@@ -2,13 +2,15 @@
 
 <span class="manual-label">参考 · 按你要做的事找方法</span>
 
-这页给已经开始接入的人查方法名和返回形状。第一次接入先看 [快速开始](./quick-start.md)：先建 client、传 Redis 配置、注册 processor，再用 `jobs.add` 发起一个普通后台任务。`runs.start` 是数据库批处理入口，按需再查。
+这页给已经开始接入的人查方法名和返回形状。第一次接入先看 [快速开始](./quick-start.md)：先建 client、传 Redis 配置、注册 processor、从应用代码创建 Worker，再用 `jobs.add` 发起一个普通后台任务。`runs.start` 是数据库批处理入口，`createCoordinatorRunner` 从应用代码推进它。CLI 命令只是可选运维工具，不是默认运行时路径。
 
 ## 先按任务找 API
 
 | 你要做什么 | 看这些方法 |
 |---|---|
-| 创建一个 Queuebit client | `createQueuebitClient({ config, logger? })` |
+| 创建一个 Queuebit client | `createQueuebitClient(config, options?)` 或 `createQueuebitClient({ config, logger? })` |
+| 从服务代码启动普通 Worker | `queuebit.createWorker(queue, createQueuebitRuntimeProcessor(runtime), options).start()` |
+| 从服务代码启动 BatchRun Coordinator | `queuebit.createCoordinatorRunner(runtime, options).start()` |
 | 发起一个后台任务 | `queuebit.jobs.add(queue, name, data, options?)` |
 | 批量发起后台任务 | `queuebit.jobs.addBulk(entries)` |
 | 查询、取消、重试 Job | `queuebit.jobs.get/list/cancel/retryFailed` |
@@ -22,15 +24,22 @@
 ## 创建一个长期 client
 
 ```ts
-import config from './queuebit.config.js';
 import { createQueuebitClient } from 'queuebit';
 
-const queuebit = await createQueuebitClient({ config, logger });
+const queuebit = await createQueuebitClient({
+  connection: { url: process.env.QUEUEBIT_REDIS_URL },
+  queues: { notification: {} }
+}, { logger });
 ```
+
+未显式传入 `namespace` 时，Queuebit 会从 `QUEUEBIT_NAMESPACE` 或最近的 `package.json` 名称派生应用 namespace。
 
 | 方法 | 语义 | 错误/边界 |
 |---|---|---|
-| `createQueuebitClient({config, logger?})` | 创建应用级长期 client | 静态配置或 Redis preflight 失败时拒绝 |
+| `createQueuebitClient(config, options?)` | 直接以普通配置对象创建应用级长期 client | 静态配置或 Redis preflight 失败时拒绝 |
+| `createQueuebitClient({config, logger?})` | 创建应用级长期 client 的兼容 options 形式 | 静态配置或 Redis preflight 失败时拒绝 |
+| `queuebit.createWorker(queue, processor, options?)` | 创建归此 client 管理的 Worker | 从应用自己的 Worker host 调用 `start()` |
+| `queuebit.createCoordinatorRunner(runtime, options?)` | 创建归此 client 管理的 BatchRun CoordinatorRunner | 只在 Coordinator host 调用 `start()`；直接 job 不需要它 |
 | `queuebit.close()` | 释放当前 client 资源 | 独立脚本结束或应用 onClose 时调用 |
 | `queuebit.health.snapshot()` | 返回 `HealthSnapshot` | 只描述当前 client/role，不冒充全集群 |
 | `queuebit.metrics.collect()` | 返回当前进程的结构化 samples | 不冒充全集群聚合 |
@@ -42,6 +51,54 @@ const queuebit = await createQueuebitClient({ config, logger });
 | `queuebit.capacity.snapshot()` | 读取已声明 queue 的 counters 与 watermarks | 只读；不扫描任意 key |
 
 不在单次 HTTP 请求或单次 `add/start` 后关闭 client。vext 由 plugin `onClose` 统一关闭。
+
+## 从应用代码启动后台服务
+
+```ts
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+const queuebit = await createQueuebitClient({ config });
+
+const worker = queuebit.createWorker(
+  'notification',
+  createQueuebitRuntimeProcessor(runtime),
+  { workerId: 'worker-a', concurrency: 8, drainTimeoutMs: 60_000 }
+);
+worker.start();
+
+// 只有 BatchRun Coordinator 服务宿主才创建它。
+const coordinator = queuebit.createCoordinatorRunner(runtime, {
+  coordinatorId: 'coordinator-a',
+  concurrency: 2,
+  onError: event => console.error('Queuebit coordinator error', event)
+});
+coordinator.start();
+
+// 从框架生命周期或进程管理器 shutdown hook 调用。
+await queuebit.close({ timeoutMs: 60_000 });
+```
+
+生产环境使用独立的 Worker/Coordinator 服务宿主；上例把两个调用放在一起，只是为了展示对称 API。进程 signal 由宿主负责。Queuebit 没有 import 时副作用，也不会注册 signal handler。
+
+`QueuebitCoordinatorRunner` 的状态是 `idle`、`running`、`draining`、`stopped`。`start()` 启动 heartbeat 和一个 polling loop。每个 tick 最多投递 `completionLimit` 个到期 completion event、列出 runnable Run，并最多推进 `concurrency` 个 Run。`status()` 暴露 `activeRuns`、role snapshot 和 `lastError`；`onError` 会立即收到同样的 heartbeat、completion delivery 或 advance 失败。
+
+| CoordinatorRunner 选项 | 默认 | 含义 |
+|---|---:|---|
+| `coordinatorId` | 自动生成 | heartbeat 和远程 drain 使用的稳定 role identity |
+| `concurrency` | 1 | 每 tick 最多推进的 runnable Run 数 |
+| `leaseMs` / `sourceTimeoutMs` | 30000 / 30000 | Run claim lease 与一次 source load timeout |
+| `pollIntervalMs` | `scheduler.pollIntervalMs` | 下一个 tick 前的等待 |
+| `completionLimit` | 25 | 每 tick 到期 completion event 数；1～100 的整数 |
+| `domain` | `scheduler.domain` | role heartbeat 作用域 |
+| `heartbeatIntervalMs` / `heartbeatTtlMs` | scheduler 值 | TTL 必须大于 interval |
+| `drainTimeoutMs` | `scheduler.drainTimeoutMs` | `drain()` / `stop()` 默认等待时间 |
+
+`drain()` 停止新 polling、写入 draining role heartbeat，并等待当前 work。远程 `coordinator drain` 命令通过这个 heartbeat 被观测到。deadline 到达时抛出 `QB_COORDINATOR_DRAIN_TIMEOUT`，runner 仍保持 `draining`；active work 收尾后再次调用 `stop()`。需要重试时，先直接重试该 runner，再调用 `queuebit.close()`：client close 是终结性清理，会先 drain client 创建的 CoordinatorRunner，再 drain Worker，即使报告 cleanup failure 也会关闭自有 Redis 连接。
 
 <a id="public-api-contract"></a>
 ## 公开输入和返回类型
@@ -625,13 +682,15 @@ await queuebit.jobs.retryFailed(failedJobId, {
 
 ### `runs.start(definition, request)`
 
+从服务端拥有的应用服务调用它。`actor` 是已认证身份，`request.paidBefore` 是已经校验过的业务输入；Queuebit 不会替你从浏览器请求或数据库解析这两个值。
+
 ```ts
 const run = await queuebit.runs.start('receipt-campaign', {
   input: {
-    tenantId: 'tenant-42',
-    paidBefore: '2026-07-15T00:00:00.000Z'
+    tenantId: actor.tenantId,
+    paidBefore: request.paidBefore
   },
-  idempotencyKey: 'receipt-campaign:tenant-42:2026-07-15'
+  idempotencyKey: `receipt:${actor.tenantId}:${request.paidBefore}`
 });
 
 console.log(run.id, run.deduplicated);

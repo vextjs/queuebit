@@ -1,16 +1,14 @@
 # Receipt Batch vext Example
 
-This directory is the canonical `docs/v01` target-contract entry for the first Queuebit user workflow.
+This directory is the canonical `docs/v01` target-contract entry for the first Queuebit BatchRun workflow. It is deliberately **code-first**: your Web/API code starts the Run, and your own service hosts construct and stop Queuebit Worker and Coordinator objects.
 
-Current status: this is not runnable evidence yet. The package scripts intentionally exit with a release-boundary message until the clean-environment example gate closes. The config and runtime files are kept here so the user manual can be checked against real exported Queuebit helper names and config fields.
+Read the source files in this order:
 
-When the release gate closes, this example must provide:
+- `start-receipt-campaign.ts` accepts only `paidBefore`; `tenantId` comes from the authenticated server-side actor before it calls `runs.start`.
+- `receipt-repository.ts` is the real database and side-effect boundary. Implement it with the repository or ORM already used by your application; do not put an array of orders in Queuebit runtime code.
+- `queuebit.runtime.ts` maps the repository page into jobs, invokes the idempotent receipt sender, and records batch/final completion events.
+- `receipt-services.ts` exposes `startReceiptWorker()` and `startReceiptCoordinator()`. Your systemd unit, container, vext bootstrap, or any other process manager decides how those functions are invoked and where it calls `stop()`.
 
-- A local Redis `>=7.2` container and an example business database.
-- Seeded paid orders with stable tenant and receipt audit fixtures.
-- A vext route that authenticates the user, derives `tenantId` server-side, and calls `runs.start`.
-- One Coordinator and two Worker roles using `queuebit.config.ts` and `queuebit.runtime.ts`.
-- Per-batch and final completion audit commands.
-- Safe cleanup limited to example-owned containers, data, and volumes.
+Current status: this is not runnable evidence yet. The package scripts intentionally exit with a release-boundary message until the clean-environment example gate closes. It has no pretend database or hard-coded recipient data, so it cannot truthfully claim to send receipts without your `ReceiptRepository` implementation.
 
-Until then, use this directory as the source-to-manual contract, not as proof that the quick-start can already run end to end.
+When the clean-environment example gate closes, this example must additionally provide a local Redis `>=7.2` container, an example business database, seeded paid-order/audit fixtures, safe example-owned cleanup, and verifiable end-to-end evidence. Until then, use it as the typed source-to-manual contract rather than proof that a local runtime is already provisioned.

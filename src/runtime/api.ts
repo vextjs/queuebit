@@ -58,6 +58,33 @@ export function defineQueuebitProcessor<Data = unknown, Result = unknown>(
   return processor;
 }
 
+/**
+ * Creates the Worker processor that dispatches jobs to the runtime processor
+ * registry. Applications can use this directly instead of depending on CLI
+ * process bootstrapping.
+ */
+export function createQueuebitRuntimeProcessor(runtime: QueuebitRuntimeDefinition): QueuebitProcessor {
+  const processors = runtime.processors ?? {};
+  if (Object.keys(processors).length === 0) {
+    throw new QueuebitError({
+      code: 'QB_CONFIG_HANDLER_NOT_REGISTERED',
+      message: 'Runtime processor dispatch requires at least one processor registration.',
+      details: { registry: 'processors' }
+    });
+  }
+  return async (job, context) => {
+    const processor = processors[job.name];
+    if (processor === undefined) {
+      throw new QueuebitError({
+        code: 'QB_CONFIG_HANDLER_NOT_REGISTERED',
+        message: `No runtime processor registered for job "${job.name}".`,
+        details: { jobId: job.id, queue: job.queue, name: job.name }
+      });
+    }
+    return processor(job, context);
+  };
+}
+
 function normalizeRegistry<T>(kind: string, registry: Record<string, T> | undefined): Record<string, T> {
   const normalized: Record<string, T> = {};
   for (const [name, value] of Object.entries(registry ?? {})) {

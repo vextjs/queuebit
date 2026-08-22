@@ -205,3 +205,22 @@ article[role='link']:focus-visible {
   }
 
 }
+
+@media (max-width: 768px) {
+  .qb-mobile-sidebar-mask {
+    position: fixed;
+    top: calc(var(--rp-nav-height) + var(--rp-banner-height, 0px));
+    right: 0;
+    bottom: 0;
+    left: 0;
+    z-index: calc(var(--rp-z-index-sidebar) - 1);
+    display: block;
+    border: 0;
+    background: rgba(17, 32, 27, 0.24);
+    cursor: default;
+  }
+
+  .rp-doc-layout__sidebar.rp-doc-layout__sidebar--open {
+    box-shadow: 16px 0 36px rgba(17, 32, 27, 0.22);
+  }
+}

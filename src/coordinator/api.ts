@@ -979,7 +979,8 @@ class QueuebitCoordinatorKernel implements QueuebitCoordinator {
     definitionConfig: QueuebitNormalizedBatchRunConfig,
     parentSignal: AbortSignal | undefined
   ) {
-    const controller = createLinkedAbortController(parentSignal);
+    const linkedController = createLinkedAbortController(parentSignal);
+    const { controller } = linkedController;
     const timeout = setTimeout(() => controller.abort('source-timeout'), this.#sourceTimeoutMs);
     try {
       const frozen = run.boundaryMissing
@@ -1015,6 +1016,7 @@ class QueuebitCoordinatorKernel implements QueuebitCoordinator {
       };
     } finally {
       clearTimeout(timeout);
+      linkedController.dispose();
     }
   }
 
@@ -1875,15 +1877,26 @@ function parseOptionalJson(value: unknown): unknown {
   }
 }
 
-function createLinkedAbortController(parentSignal: AbortSignal | undefined): AbortController {
+interface LinkedAbortController {
+  controller: AbortController;
+  dispose(): void;
+}
+
+function createLinkedAbortController(parentSignal: AbortSignal | undefined): LinkedAbortController {
   const controller = new AbortController();
-  if (parentSignal === undefined) return controller;
+  if (parentSignal === undefined) return { controller, dispose() {} };
   if (parentSignal.aborted) {
     controller.abort(parentSignal.reason);
-    return controller;
+    return { controller, dispose() {} };
   }
-  parentSignal.addEventListener('abort', () => controller.abort(parentSignal.reason), { once: true });
-  return controller;
+  const onAbort = () => controller.abort(parentSignal.reason);
+  parentSignal.addEventListener('abort', onAbort, { once: true });
+  return {
+    controller,
+    dispose() {
+      parentSignal.removeEventListener('abort', onAbort);
+    }
+  };
 }
 
 function assignOptional<T extends object, K extends keyof T>(target: T, key: K, value: T[K] | undefined) {

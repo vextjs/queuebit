@@ -67,16 +67,62 @@ Readiness checks Redis, role ownership, and business dependencies. Liveness only
 
 1. Verify Redis policy, persistence, primary role, and connectivity.
 2. Run `config validate --runtime`; block missing handlers and version drift.
-3. Start Workers and confirm heartbeat plus time advancement.
-4. If you use BatchRun, start Coordinators and confirm source/completion dependencies.
+3. Start Worker service hosts and confirm heartbeat plus time advancement.
+4. If you use BatchRun, start CoordinatorRunner service hosts and confirm source/completion dependencies.
 5. Only then allow Web/API to create new work.
 
-```bash
-npx queuebit config validate --config queuebit.config.ts --runtime queuebit.runtime.ts
-npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification
-npx queuebit coordinator start --config queuebit.config.ts --runtime queuebit.runtime.ts
-vext start
+```ts title="worker-host.ts"
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+export async function startWorkerHost() {
+  const workerClient = await createQueuebitClient({ config });
+  const worker = workerClient.createWorker(
+    'notification',
+    createQueuebitRuntimeProcessor(runtime),
+    { workerId: 'worker-a', concurrency: 8, drainTimeoutMs: 60_000 }
+  );
+  worker.start();
+
+  return {
+    async close() {
+      await workerClient.close({ timeoutMs: 60_000 });
+    }
+  };
+}
 ```
+
+```ts title="coordinator-host.ts · BatchRun only"
+import { createQueuebitClient } from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+interface ErrorLogger {
+  error(context: { event: unknown }, message: string): void;
+}
+
+export async function startCoordinatorHost(logger: ErrorLogger) {
+  const coordinatorClient = await createQueuebitClient({ config });
+  const coordinator = coordinatorClient.createCoordinatorRunner(runtime, {
+    coordinatorId: 'coordinator-a',
+    concurrency: 2,
+    onError: event => logger.error({ event }, 'Queuebit coordinator error')
+  });
+  coordinator.start();
+
+  return {
+    async close() {
+      await coordinatorClient.close({ timeoutMs: 60_000 });
+    }
+  };
+}
+```
+
+Your process manager decides how these exported host functions are invoked. Retain the returned service and call its `close()` method from the host's shutdown lifecycle. Queuebit does not install signal handlers or start roles on import. Use `npx queuebit config validate` only as an optional pre-deploy configuration check, not as the runtime integration mechanism.
 
 Producer should not create unbounded work with no active Worker. Queue jobs/bytes backpressure is the final guard, not a replacement for startup order and capacity planning.
 

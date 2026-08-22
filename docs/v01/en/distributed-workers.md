@@ -28,15 +28,27 @@ flowchart LR
 
 All instances use the same Redis, `namespace`, and queue name. Direct jobs need only Producer plus Worker. You need a Coordinator only when `runs.start` processes database records in batches.
 
-```bash
-npx queuebit worker start \
-  --queue notification \
-  --config queuebit.config.ts \
-  --runtime queuebit.runtime.ts \
-  --concurrency 8
+```ts title="worker-service.ts"
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+export async function startWorker(workerId: string) {
+  const client = await createQueuebitClient({ config });
+  const worker = client.createWorker(
+    'notification',
+    createQueuebitRuntimeProcessor(runtime),
+    { workerId, concurrency: 8, drainTimeoutMs: 60_000 }
+  );
+  worker.start();
+  return { worker, stop: () => client.close({ timeoutMs: 60_000 }) };
+}
 ```
 
-Run the same command on multiple machines or containers. Give each process a distinct identity or hostname in logs so incidents can be traced.
+Run the same service code on multiple machines or containers with distinct `workerId` values. Your deployment decides the command and process manager; the Queuebit API only owns the Worker lifecycle.
 
 ## Calculate concurrency
 
@@ -93,7 +105,7 @@ npx queuebit worker drain \
   --config queuebit.config.ts
 ```
 
-The remote drain command only tells that Worker to stop taking new jobs. After the Worker observes the request, it waits for active handlers using the drain timeout configured on its own start command, such as `worker start --drain-timeout-ms 60000`. If the timeout expires, Queuebit does not mark jobs successful or failed; renewal stops, the process exits non-zero, and another Worker reclaims after lease expiry.
+The remote drain command only tells that Worker to stop taking new jobs. After the Worker observes it, the `drainTimeoutMs` passed to `client.createWorker()` controls how long active handlers may finish. A service host can also call `worker.drain({ timeoutMs: 60_000 })` or `client.close({ timeoutMs: 60_000 })` directly. If the timeout expires, Queuebit does not mark jobs successful or failed; renewal stops, the host decides its exit policy, and another Worker reclaims after lease expiry.
 
 Rolling release order:
 

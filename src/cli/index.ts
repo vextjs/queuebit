@@ -1,6 +1,5 @@
 import { createRequire } from 'node:module';
 import process from 'node:process';
-import { setTimeout as delay } from 'node:timers/promises';
 import { resolve } from 'node:path';
 import { createQueuebitClient, type QueuebitClient } from '../client';
 import {
@@ -13,8 +12,8 @@ import type { CompletionListQuery } from '../completions';
 import type { JobState } from '../jobs';
 import type { RunExecutionState } from '../runs';
 import {
+  createQueuebitRuntimeProcessor,
   defineQueuebitRuntime,
-  type QueuebitProcessor,
   type QueuebitRuntimeDefinition
 } from '../runtime';
 import { loadQueuebitModule, type LoadedQueuebitModule } from './loader';
@@ -47,7 +46,6 @@ interface CliErrorEnvelope {
   };
 }
 
-const terminalRunStates = new Set<RunExecutionState>(['completed', 'partial_failed', 'failed', 'cancelled']);
 const jobStates: JobState[] = ['waiting', 'active', 'delayed', 'retrying', 'completed', 'failed', 'cancelled'];
 
 export async function runQueuebitCli(
@@ -356,7 +354,7 @@ async function workerStartCommand(parsed: ParsedArgs, io: CliIo): Promise<unknow
   const queue = requiredStringFlag(parsed, 'queue');
   const { config } = await loadConfig(parsed);
   const { runtime } = await loadRequiredRuntime(parsed);
-  const processor = createRuntimeProcessor(runtime);
+  const processor = createQueuebitRuntimeProcessor(runtime);
   const client = await createQueuebitClient({ config });
   const workerOptions: Parameters<QueuebitClient['createWorker']>[2] = {};
   assignOptional(workerOptions, 'workerId', optionalStringFlag(parsed, 'worker-id'));
@@ -382,85 +380,39 @@ async function coordinatorStartCommand(parsed: ParsedArgs, io: CliIo): Promise<u
   const { config } = await loadConfig(parsed);
   const { runtime } = await loadRequiredRuntime(parsed);
   const client = await createQueuebitClient({ config });
-  const coordinatorOptions: Parameters<QueuebitClient['createCoordinator']>[1] = {};
+  const coordinatorOptions: Parameters<QueuebitClient['createCoordinatorRunner']>[1] = {};
   assignOptional(coordinatorOptions, 'coordinatorId', optionalStringFlag(parsed, 'coordinator-id'));
   assignOptional(coordinatorOptions, 'leaseMs', optionalDurationFlag(parsed, 'lease-ms'));
   assignOptional(coordinatorOptions, 'sourceTimeoutMs', optionalDurationFlag(parsed, 'source-timeout-ms'));
-  const coordinator = client.createCoordinator(runtime, coordinatorOptions);
-  writeRoleReady(io, parsed, { role: 'coordinator', coordinatorId: coordinator.coordinatorId });
-  const abort = createSignalAbortController();
-  const roleOptions = {
-    domain: optionalStringFlag(parsed, 'domain') ?? config.scheduler.domain,
-    heartbeatIntervalMs:
-      optionalDurationFlag(parsed, 'heartbeat-interval-ms') ?? config.scheduler.heartbeatIntervalMs,
-    heartbeatTtlMs: optionalDurationFlag(parsed, 'heartbeat-ttl-ms') ?? config.scheduler.heartbeatTtlMs
-  };
-  if (roleOptions.heartbeatTtlMs <= roleOptions.heartbeatIntervalMs) {
+  assignOptional(coordinatorOptions, 'concurrency', optionalIntegerFlag(parsed, 'concurrency'));
+  assignOptional(coordinatorOptions, 'pollIntervalMs', optionalDurationFlag(parsed, 'poll-interval-ms'));
+  assignOptional(coordinatorOptions, 'drainTimeoutMs', optionalDurationFlag(parsed, 'drain-timeout-ms'));
+  const heartbeatIntervalMs = optionalDurationFlag(parsed, 'heartbeat-interval-ms');
+  const heartbeatTtlMs = optionalDurationFlag(parsed, 'heartbeat-ttl-ms');
+  if (
+    (heartbeatTtlMs ?? config.scheduler.heartbeatTtlMs)
+    <= (heartbeatIntervalMs ?? config.scheduler.heartbeatIntervalMs)
+  ) {
     throw invalidArgument('--heartbeat-ttl-ms must be greater than --heartbeat-interval-ms.');
   }
+  assignOptional(coordinatorOptions, 'domain', optionalStringFlag(parsed, 'domain'));
+  assignOptional(coordinatorOptions, 'heartbeatIntervalMs', heartbeatIntervalMs);
+  assignOptional(coordinatorOptions, 'heartbeatTtlMs', heartbeatTtlMs);
+  const coordinator = client.createCoordinatorRunner(runtime, coordinatorOptions);
+  coordinator.start();
+  writeRoleReady(io, parsed, {
+    role: 'coordinator',
+    coordinatorId: coordinator.coordinatorId,
+    status: coordinator.status()
+  });
   try {
-    await runCoordinatorLoop(client, runtime, coordinator.coordinatorId, abort.signal, parsed, roleOptions);
+    await waitForSignal();
   } finally {
-    await client.roles.unregister({
-      role: 'coordinator',
-      domain: roleOptions.domain,
-      identity: coordinator.coordinatorId
-    }).catch(() => undefined);
     const closeOptions: Parameters<QueuebitClient['close']>[0] = {};
     assignOptional(closeOptions, 'timeoutMs', optionalDurationFlag(parsed, 'drain-timeout-ms'));
     await client.close(closeOptions);
   }
   return undefined;
-}
-
-async function runCoordinatorLoop(
-  client: QueuebitClient,
-  runtime: QueuebitRuntimeDefinition,
-  coordinatorId: string,
-  signal: AbortSignal,
-  parsed: ParsedArgs,
-  roleOptions: { domain: string; heartbeatIntervalMs: number; heartbeatTtlMs: number }
-): Promise<void> {
-  const coordinator = client.createCoordinator(runtime, { coordinatorId });
-  const concurrency = optionalIntegerFlag(parsed, 'concurrency') ?? 1;
-  const pollIntervalMs = optionalDurationFlag(parsed, 'poll-interval-ms') ?? 1_000;
-  let nextHeartbeatMs = 0;
-  while (!signal.aborted) {
-    const nowMs = Date.now();
-    if (nowMs >= nextHeartbeatMs) {
-      const role = await client.roles.heartbeat({
-        role: 'coordinator',
-        domain: roleOptions.domain,
-        identity: coordinatorId,
-        status: 'running',
-        heartbeatTtlMs: roleOptions.heartbeatTtlMs,
-        metadata: { concurrency }
-      });
-      if (role.drainRequested) {
-        await client.roles.heartbeat({
-          role: 'coordinator',
-          domain: roleOptions.domain,
-          identity: coordinatorId,
-          status: 'draining',
-          heartbeatTtlMs: roleOptions.heartbeatTtlMs,
-          metadata: { concurrency }
-        });
-        return;
-      }
-      nextHeartbeatMs = nowMs + roleOptions.heartbeatIntervalMs;
-    }
-    await coordinator.deliverDueCompletions({ limit: 25, signal }).catch(() => undefined);
-    const page = await client.runs.list({ limit: Math.max(1, Math.min(100, concurrency * 4)) });
-    const runnable = page.items
-      .filter(run => !terminalRunStates.has(run.executionState))
-      .slice(0, concurrency);
-    await Promise.all(runnable.map(run => coordinator.advanceRun(run.id, { signal }).catch(() => undefined)));
-    try {
-      await delay(pollIntervalMs, undefined, { signal });
-    } catch {
-      return;
-    }
-  }
 }
 
 async function withClient<T>(parsed: ParsedArgs, run: (client: QueuebitClient, config: QueuebitConfig) => Promise<T>): Promise<T> {
@@ -526,28 +478,6 @@ function validateRuntimeRegistrations(config: QueuebitConfig, runtime: QueuebitR
     mappers: Object.keys(runtime.mappers),
     processors: Object.keys(runtime.processors ?? {}),
     completions: Object.keys(runtime.completions ?? {})
-  };
-}
-
-function createRuntimeProcessor(runtime: QueuebitRuntimeDefinition): QueuebitProcessor {
-  const processors = runtime.processors ?? {};
-  if (Object.keys(processors).length === 0) {
-    throw new QueuebitError({
-      code: 'QB_CONFIG_HANDLER_NOT_REGISTERED',
-      message: 'Worker start requires at least one runtime processor registration.',
-      details: { registry: 'processors' }
-    });
-  }
-  return async (job, context) => {
-    const processor = processors[job.name];
-    if (processor === undefined) {
-      throw new QueuebitError({
-        code: 'QB_CONFIG_HANDLER_NOT_REGISTERED',
-        message: `No runtime processor registered for job "${job.name}".`,
-        details: { jobId: job.id, queue: job.queue, name: job.name }
-      });
-    }
-    return processor(job, context);
   };
 }
 
@@ -760,14 +690,6 @@ function assignOptional<T extends object, K extends keyof T>(target: T, key: K, 
 
 function assertRecord(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === 'object' ? value as Record<string, unknown> : {};
-}
-
-function createSignalAbortController(): AbortController {
-  const controller = new AbortController();
-  const abort = () => controller.abort();
-  process.once('SIGINT', abort);
-  process.once('SIGTERM', abort);
-  return controller;
 }
 
 function waitForSignal(): Promise<void> {

@@ -1,4 +1,8 @@
-import type { QueuebitConfig } from './config';
+import {
+  defineQueuebitConfig,
+  type QueuebitConfig,
+  type QueuebitUserConfig
+} from './config';
 import { createQueuebitCompletionsApi, type CompletionsApi } from './completions';
 import {
   createQueuebitRedisConnection,
@@ -46,14 +50,16 @@ import { createQueuebitRunsApi, type RunsApi } from './runs';
 import { createQueuebitRolesApi, type QueuebitRolesApi } from './roles';
 import {
   createQueuebitCoordinator,
+  createQueuebitCoordinatorRunner,
   type QueuebitCoordinator,
-  type QueuebitCoordinatorOptions
+  type QueuebitCoordinatorOptions,
+  type QueuebitCoordinatorRunner,
+  type QueuebitCoordinatorRunnerOptions
 } from './coordinator';
 import type { QueuebitRuntimeDefinition } from './runtime';
 import {
   createQueuebitWorker,
   type QueuebitWorker,
-  type QueuebitWorkerDrainOptions,
   type QueuebitWorkerOptions,
   type QueuebitWorkerProcessor
 } from './worker';
@@ -111,12 +117,16 @@ export interface QueuebitClient {
   readonly alerts: AlertsApi;
   readonly observabilityHttp: QueuebitObservabilityHttpApi;
   createCoordinator(runtime: QueuebitRuntimeDefinition, options?: QueuebitClientCoordinatorOptions): QueuebitCoordinator;
+  createCoordinatorRunner(
+    runtime: QueuebitRuntimeDefinition,
+    options?: QueuebitClientCoordinatorRunnerOptions
+  ): QueuebitCoordinatorRunner;
   createWorker<Data = unknown, Result = unknown>(
     queue: string,
     processor: QueuebitWorkerProcessor<Data, Result>,
     options?: QueuebitClientWorkerOptions
   ): QueuebitWorker;
-  close(options?: QueuebitWorkerDrainOptions): Promise<void>;
+  close(options?: QueuebitClientCloseOptions): Promise<void>;
 }
 
 export type QueuebitClientWorkerOptions = Omit<
@@ -129,6 +139,15 @@ export type QueuebitClientCoordinatorOptions = Omit<
   'config' | 'redis' | 'runtime' | 'observability' | 'now'
 >;
 
+export type QueuebitClientCoordinatorRunnerOptions = Omit<
+  QueuebitCoordinatorRunnerOptions,
+  'config' | 'redis' | 'runtime' | 'roleRegistry' | 'observability' | 'now'
+>;
+
+export interface QueuebitClientCloseOptions {
+  timeoutMs?: number;
+}
+
 export interface QueuebitClientOptions {
   config: QueuebitConfig;
   redis?: QueuebitRedisCommandClient;
@@ -137,24 +156,44 @@ export interface QueuebitClientOptions {
   now?: () => Date;
 }
 
-export async function createQueuebitClient(options: QueuebitClientOptions): Promise<QueuebitClient> {
+export type QueuebitClientDirectOptions = Omit<QueuebitClientOptions, 'config'>;
+
+export function createQueuebitClient(
+  config: QueuebitUserConfig,
+  options?: QueuebitClientDirectOptions
+): Promise<QueuebitClient>;
+export function createQueuebitClient(options: QueuebitClientOptions): Promise<QueuebitClient>;
+export async function createQueuebitClient(
+  configOrOptions: QueuebitUserConfig | QueuebitClientOptions,
+  directOptions: QueuebitClientDirectOptions = {}
+): Promise<QueuebitClient> {
+  const options: QueuebitClientOptions = 'config' in configOrOptions
+    ? configOrOptions
+    : { ...directOptions, config: defineQueuebitConfig(configOrOptions) };
   const now = options.now ?? (() => new Date());
   const ownedConnection = options.redis === undefined
     ? createQueuebitRedisConnection(options.config, { name: `queuebit:${options.config.namespace}` })
     : undefined;
-  const redis = options.redis ?? await connectOwned(ownedConnection);
+  let redis: QueuebitRedisCommandClient;
   let preflightResult: RedisPreflightResult | undefined;
 
-  if (options.preflight !== false) {
-    preflightResult = await runRedisPreflight(
-      redis as QueuebitRedisCommandClient & RedisPreflightClient,
-      options.config.connection.serverPolicy.mode
-    );
-    assertRedisPreflightReady(preflightResult);
+  try {
+    redis = options.redis ?? await connectOwned(ownedConnection);
+    if (options.preflight !== false) {
+      preflightResult = await runRedisPreflight(
+        redis as QueuebitRedisCommandClient & RedisPreflightClient,
+        options.config.connection.serverPolicy.mode
+      );
+      assertRedisPreflightReady(preflightResult);
+    }
+  } catch (cause) {
+    await closeOwnedConnectionAfterInitializationFailure(ownedConnection, cause);
+    throw cause;
   }
 
   const keys = createQueuebitKeyBuilder(options.config);
   const workers = new Set<QueuebitWorker>();
+  const coordinatorRunners = new Set<QueuebitCoordinatorRunner>();
   let closing = false;
   const observability = createQueuebitObservabilityBackend({
     config: options.config,
@@ -196,6 +235,22 @@ export async function createQueuebitClient(options: QueuebitClientOptions): Prom
         now
       });
     },
+    createCoordinatorRunner(
+      runtime: QueuebitRuntimeDefinition,
+      runnerOptions: QueuebitClientCoordinatorRunnerOptions = {}
+    ) {
+      const runner = createQueuebitCoordinatorRunner({
+        config: options.config,
+        redis,
+        runtime,
+        ...runnerOptions,
+        roleRegistry: roles,
+        observability: observability.recorder,
+        now
+      });
+      coordinatorRunners.add(runner);
+      return runner;
+    },
     createWorker<Data = unknown, Result = unknown>(
       queue: string,
       processor: QueuebitWorkerProcessor<Data, Result>,
@@ -214,13 +269,46 @@ export async function createQueuebitClient(options: QueuebitClientOptions): Prom
       workers.add(worker);
       return worker;
     },
-    async close(closeOptions: QueuebitWorkerDrainOptions = {}) {
+    async close(closeOptions: QueuebitClientCloseOptions = {}) {
+      if (closing) return;
       closing = true;
-      await Promise.all([...workers].map(worker => worker.stop(closeOptions)));
+      const runnerResults = await Promise.allSettled(
+        [...coordinatorRunners].map(runner => runner.stop(closeOptions))
+      );
+      coordinatorRunners.clear();
+      const workerResults = await Promise.allSettled([...workers].map(worker => worker.stop(closeOptions)));
       workers.clear();
-      if (ownedConnection !== undefined) await ownedConnection.close();
+      const failures = [...runnerResults, ...workerResults]
+        .filter((result): result is PromiseRejectedResult => result.status === 'rejected')
+        .map(result => result.reason);
+      if (ownedConnection !== undefined) {
+        try {
+          await ownedConnection.close();
+        } catch (cause) {
+          failures.push(cause);
+        }
+      }
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'Queuebit client close encountered one or more cleanup failures.');
+      }
     }
   };
+}
+
+async function closeOwnedConnectionAfterInitializationFailure(
+  connection: QueuebitRedisConnection | undefined,
+  cause: unknown
+): Promise<never> {
+  if (connection === undefined) throw cause;
+  try {
+    await connection.close();
+  } catch (closeCause) {
+    throw new AggregateError(
+      [cause, closeCause],
+      'Queuebit client initialization failed and the owned Redis connection could not be closed.'
+    );
+  }
+  throw cause;
 }
 
 async function connectOwned(connection: QueuebitRedisConnection | undefined): Promise<QueuebitRedisCommandClient> {

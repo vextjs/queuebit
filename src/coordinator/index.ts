@@ -1,8 +1,15 @@
 export { createQueuebitCoordinator } from './api';
+export { createQueuebitCoordinatorRunner } from './runner';
 export type {
   QueuebitCoordinator,
   QueuebitCoordinatorAdvanceOptions,
   QueuebitCoordinatorAdvanceResult,
   QueuebitCoordinatorAdvanceStatus,
-  QueuebitCoordinatorOptions
+  QueuebitCoordinatorOptions,
+  QueuebitCoordinatorRunner,
+  QueuebitCoordinatorRunnerDrainOptions,
+  QueuebitCoordinatorRunnerError,
+  QueuebitCoordinatorRunnerOptions,
+  QueuebitCoordinatorRunnerStatus,
+  QueuebitCoordinatorRunnerStatusSnapshot
 } from './types';

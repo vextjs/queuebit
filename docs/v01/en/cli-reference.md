@@ -2,7 +2,40 @@
 
 <span class="manual-label">Reference · commands, JSON, and exit codes</span>
 
-The CLI is a helper, not a requirement for using Queuebit. A normal app can call `createQueuebitClient()` from a Node framework, or start Workers from a plain `.js/.mjs` file. Use the CLI for local validation, background role startup, inspect, drain, and recovery.
+The CLI is optional compatibility and operations tooling, not Queuebit's normal runtime entrypoint. In a normal integration, application code calls `createQueuebitClient()`, `client.createWorker()`, and, for BatchRun, `client.createCoordinatorRunner()`. The application chooses its process manager and shutdown hook. Use the CLI for local validation, inspect, remote drain, recovery, or a deliberate CLI-host compatibility choice.
+
+## Default integration: start roles from application code
+
+```ts
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+const queuebit = await createQueuebitClient({ config });
+
+const worker = queuebit.createWorker(
+  'notification',
+  createQueuebitRuntimeProcessor(runtime),
+  { workerId: 'worker-a', concurrency: 8 }
+);
+worker.start();
+
+// Create this only in the separate service host that advances BatchRuns.
+const coordinator = queuebit.createCoordinatorRunner(runtime, {
+  coordinatorId: 'coordinator-a',
+  concurrency: 2,
+  onError: event => console.error('Queuebit coordinator error', event)
+});
+coordinator.start();
+
+// Call from the host application's own shutdown lifecycle.
+await queuebit.close({ timeoutMs: 60_000 });
+```
+
+Run Workers and Coordinators in separate service hosts in production; the example places both factory calls together only to show their public API. Queuebit has no import-time or signal-handler side effects. Attach `onError` to your application's logger and inspect `coordinator.status().lastError` when monitoring a CoordinatorRunner.
 
 ## Common rules
 
@@ -12,7 +45,9 @@ The CLI is a helper, not a requirement for using Queuebit. A normal app can call
 - Inspect commands use tables by default and stable machine output with `--json`.
 - When Bash examples use backslash continuation, PowerShell users should use one line or write a JS startup file.
 
-## Start roles
+## Optional CLI role hosts
+
+Use these commands only when you deliberately want the Queuebit CLI to be the executable of a background service. They are compatible alternatives to the code above, not a framework-integration requirement.
 
 ```bash
 npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification
@@ -21,15 +56,27 @@ npx queuebit coordinator start --config queuebit.config.ts --runtime queuebit.ru
 
 v0.1 provides cooperative time advancement only: background Workers compete for one effective owner, and no separate Scheduler starts. `scheduler start`, `scheduler inspect`, and `scheduler drain` are not v0.1 commands; invoking them returns exit code 2 with `QB_CLI_COMMAND_UNSUPPORTED` so automation cannot mistake them for a running role.
 
-Framework integrations do not need the CLI for Web/API startup. Web processes call `jobs.add()` or `runs.start()`. Workers may be started with the CLI or with your own Node startup file that loads the same config and runtime.
+Framework integrations do not need the CLI for Web/API, Worker, or Coordinator startup. Web/API code calls `jobs.add()` or `runs.start()`; its own service hosts construct, start, and close the Worker/Coordinator objects.
 
-## Run commands
+## Run commands (manual or operator use)
+
+Normal business code starts a BatchRun with `queuebit.runs.start(...)` after it derives tenant and business input on the server. `run start` is for local/manual recovery or operator testing, not the normal request-path integration.
+
+```ts
+await queuebit.runs.start('receipt-campaign', {
+  input: { tenantId: actor.tenantId, paidBefore: request.paidBefore },
+  idempotencyKey: `receipt:${actor.tenantId}:${request.paidBefore}`
+});
+```
 
 ```bash
+TENANT_ID='<tenant from the authorized incident record>'
+PAID_BEFORE='<approved ISO-8601 campaign boundary>'
+
 npx queuebit run start receipt-campaign \
   --config queuebit.config.ts \
-  --input-json '{"tenantId":"tenant-42","paidBefore":"2026-07-15T00:00:00.000Z"}' \
-  --idempotency-key 'receipt-campaign:tenant-42:2026-07-15'
+  --input-json "{\"tenantId\":\"${TENANT_ID}\",\"paidBefore\":\"${PAID_BEFORE}\"}" \
+  --idempotency-key "receipt:${TENANT_ID}:${PAID_BEFORE}"
 
 npx queuebit run inspect <runId> --config queuebit.config.ts
 npx queuebit run list --definition receipt-campaign --state partial_failed --limit 100 --config queuebit.config.ts
@@ -72,13 +119,13 @@ npx queuebit worker drain --queue notification --worker-id worker-a --reason rol
 npx queuebit coordinator drain --coordinator-id coordinator-a --reason rolling-release --config queuebit.config.ts
 ```
 
-A start command drains automatically on SIGTERM. On timeout it stops lease renewal and exits non-zero without inventing failed or cancelled business state.
+An optional CLI role host drains automatically on SIGTERM. SDK Workers and CoordinatorRunners drain only when their host calls `drain()` or `queuebit.close()`. On timeout, the role stops lease renewal and reports failure without inventing failed or cancelled business state.
 
 ## Exit codes
 
 | Code | Meaning |
 |---:|---|
-| 0 | Success, or a long-running role completed graceful drain |
+| 0 | Success, or an optional long-running CLI role completed graceful drain |
 | 1 | Operation failed or role terminated abnormally |
 | 2 | Argument, configuration, runtime registration, or loader error |
 | 3 | Redis/dependency temporarily unavailable; caller may back off using `retryable` |

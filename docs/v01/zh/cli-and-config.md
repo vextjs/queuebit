@@ -21,14 +21,16 @@
 
 ## 命名与静态校验
 
-`namespace` 默认是 `default`，长度 1～128，只允许字母、数字、冒号、下划线和短横线。queue、source、mapper 和 handler 引用长度 1～192，字符集相同。点号不是合法名称字符。未知字段不会被静默忽略。
+`namespace` 不再有共享的静态默认值。Queuebit 按以下顺序确定它：配置对象中的 `namespace`、`QUEUEBIT_NAMESPACE`、再从最近的 `package.json` 名称派生稳定的 `app:<规范化包名>:<hash>` 值。找不到包名时会以 `QB_CONFIG_INVALID` 拒绝配置，不会悄悄与其他应用共用 keyspace。namespace 长度 1～128，只允许字母、数字、冒号、下划线和短横线。queue、source、mapper 和 handler 引用长度 1～192，字符集相同。点号不是合法名称字符。未知字段不会被静默忽略。
+
+**从旧静态默认值升级：**此前省略 `namespace` 的应用实际使用 `default`。升级期间，在 API 和 Worker 中同时设置 `namespace: 'default'` 或 `QUEUEBIT_NAMESPACE=default`，即可继续使用旧 keyspace；清空或迁移旧 job 后，再移除覆盖并切换到自动应用 namespace。
 
 ## 根配置
 
 | 字段 | 类型 | 必填 | 默认 | 作用 |
 |---|---|---:|---|---|
 | `connection` | `RedisConnection` | 否 | direct `127.0.0.1:6379/0` | Redis endpoint 与 server policy |
-| `namespace` | `string` | 否 | `default` | 环境/业务 keyspace 隔离 |
+| `namespace` | `string` | 否 | 自动派生的应用 namespace | Redis keyspace 隔离；代码中的显式值优先级最高 |
 | `workerDefaults` | `WorkerOptions` | 否 | 见下 | Worker 默认 |
 | `scheduler` | `SchedulerOptions` | 否 | cooperative | 时间推进模式/作用域 |
 | `queues` | `Record<string, QueueConfig>` | 否 | `{}` | 已声明 Queue 与背压 |
@@ -38,7 +40,7 @@
 | `limits` | `PayloadLimits` | 否 | 见下 | 序列化和批量上限 |
 | `deduplication` | `DeduplicationConfig` | 否 | 见下 | 业务 identity 保留窗口 |
 
-Coordinator 并发、source timeout、completion delivery 限制和 role identity 是启动 Coordinator 进程时传入的进程选项，不是当前 `queuebit.config.ts` 的根字段。
+Coordinator 并发、source timeout、completion delivery 限制和 role identity 是传给 `client.createCoordinatorRunner(runtime, options)` 的进程选项，不是当前 `queuebit.config.ts` 的根字段。可选 CLI 角色宿主也接受对应参数，但它不是默认接入路径。
 
 ## Redis 连接
 
@@ -99,9 +101,25 @@ jobs 或 bytes 任一到 high 就设置共享 latch；两者都回到 low 或更
 | `heartbeatIntervalMs` | 5000 | role heartbeat 写入间隔 |
 | `heartbeatTtlMs` | 15000 | role heartbeat TTL |
 
-## Coordinator 进程选项
+## CoordinatorRunner 选项
 
-Coordinator 选项由 Coordinator factory 或 CLI role process 传入，不属于根配置。未传时 role 会生成 `coordinatorId`；CLI drain 命令必须带同一个 identity，才能向 Redis 写入目标 role 的协作式 drain request。
+把这些选项传给 `client.createCoordinatorRunner(runtime, options)`。client 负责注入 config、Redis、role registry 和 observability；应用只传下面的角色行为选项。未传时会生成 `coordinatorId`。可选 CLI 角色宿主接受对应参数，它的远程 drain 命令必须带同一 identity，才能向 Redis 写入目标 role 的协作式 drain request。
+
+| 字段 | 默认 | 约束 / 作用 |
+|---|---:|---|
+| `coordinatorId` | 自动生成 | 每个 service instance 保持稳定；用于 role heartbeat 和远程 drain |
+| `concurrency` | 1 | 正整数；每个 polling tick 最多推进的 runnable Run 数 |
+| `leaseMs` | 30000 | 正整数；Run 推进 lease |
+| `sourceTimeoutMs` | 30000 | 正整数；单次 source load timeout |
+| `pollIntervalMs` | `scheduler.pollIntervalMs` | 正整数；下一个 polling tick 前等待 |
+| `completionLimit` | 25 | 1～100 的整数；每 tick 投递的到期 completion event 数 |
+| `domain` | `scheduler.domain` | role heartbeat ownership 作用域 |
+| `heartbeatIntervalMs` | `scheduler.heartbeatIntervalMs` | 正整数；role heartbeat 间隔 |
+| `heartbeatTtlMs` | `scheduler.heartbeatTtlMs` | 必须大于 heartbeat interval |
+| `drainTimeoutMs` | `scheduler.drainTimeoutMs` | `drain()` / `stop()` 默认等待时间 |
+| `onError` | 无 | 接收 heartbeat、completion delivery 与 Run advance 失败 |
+
+一个 CoordinatorRunner 同一时刻只拥有一个 polling loop：它投递到期 completion event、列出 runnable Run，并且每 tick 最多推进 `concurrency` 个。读取 `runner.status().lastError`，并把 `onError` 接到应用 logger；失败不会被静默丢弃。`drain()` 停止新 polling、将 role heartbeat 写为 draining，并等待 active work；到达 deadline 时抛出 `QB_COORDINATOR_DRAIN_TIMEOUT`，状态仍为 `draining`，因此宿主可在 work 收尾后再次调用 `stop()`。需要重试时，先直接重试该 runner，再调用 `client.close()`：client close 是终结性清理，即使它报告 cleanup failure 也会释放自有 Redis 连接。
 
 ## 时间推进 / Scheduler
 

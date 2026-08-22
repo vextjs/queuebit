@@ -24,6 +24,16 @@ Implementation must not silently weaken the user contract because current code i
 
 Current local source evidence is explicitly scoped from Runtime M0A through M2K. Anything requiring target Redis/Sentinel execution, target destructive purge/full tombstone evidence, production-mounted scrape/auth/network evidence, or publish evidence remains a release gate rather than a completed capability.
 
+## Local documentation site
+
+Use the preview script for review and handoff:
+
+```bash
+npm run docs:preview
+```
+
+It builds the site first and then serves the generated pages at `http://localhost:4180/queuebit/`. The Chinese entry is `http://localhost:4180/queuebit/zh/`. `npm run docs:dev` serves the same generated-site behavior on `http://127.0.0.1:4181/queuebit/` for local review. Use `npm run docs:edit` only while editing docs; it runs the Rspress hot dev server on `http://127.0.0.1:4182/queuebit/` and must not be used as the handoff URL.
+
 ## M0 acceptance
 
 - Multi-process claim, delay/retry, timeout, stalled recovery, cancel, and replacement for Queue/Job/Producer/Worker.

@@ -2,24 +2,26 @@
 
 <span class="manual-label">生产运维 · 从最小配置开始</span>
 
-大多数项目先只需要两个文件：`queuebit.config.ts` 放 Redis、namespace、queue 和 Worker 默认值；`queuebit.runtime.ts` 先只注册 processor。API 进程负责提交任务，Worker 进程负责执行任务，CLI 只是验证和排查工具，不是接入 Queuebit 的必经入口。source、mapper 和 completion handler 只有数据库批处理才需要。
+第一次只跑一个后台任务时，先按[快速开始](./quick-start.md)使用普通配置对象和 Worker 业务函数即可。需要 CLI、多个 Worker/Coordinator 服务、BatchRun 或统一配置治理时，再采用这里的 `queuebit.config.ts` 与 `queuebit.runtime.ts` 分层。API 进程负责提交任务，Worker 进程负责执行任务，CLI 只是验证和排查工具，不是接入 Queuebit 的必经入口。source、mapper 和 completion handler 只有数据库批处理才需要。
 
 ## 先判断你属于哪种情况
 
 | 你要做什么 | 先配置什么 | 暂时不用看 |
 |---|---|---|
-| 本地或框架里跑一个后台任务 | `connection`、`namespace`、`queues` | Sentinel、retention、BatchRun、CI |
+| 本地或框架里跑一个后台任务 | `connection`、`queues` | Sentinel、retention、BatchRun、CI |
 | 线上跑多个 Worker | 加 `workerDefaults`、Redis strict policy、health check | BatchRun definition |
 | 从数据库分页创建很多任务 | 再加 `batchRuns`，并在 runtime 注册 source/mapper/completion | Redis 内部模型 |
 
-如果你只是把 Queuebit 接到 Node/Fastify/Nest/vext 项目里，通常就是在服务启动时创建 client，在独立 worker 脚本里注册 runtime，然后让进程管理器或容器拉起 worker。
+如果你只是把 Queuebit 接到 Node/Fastify/Nest/vext 项目里，通常就是在服务启动时创建 client，在独立 worker 脚本里传入业务函数，然后让进程管理器或容器拉起 worker。
 
-## 文件、启动参数和 runtime 的分工
+Queuebit 默认从应用包名派生稳定、隔离的 namespace。若同一个包的多个部署刻意共用 Redis，为每个部署设置不同的 `QUEUEBIT_NAMESPACE`。
 
-多数项目只需要文件里的默认值；只有某个进程需要临时不同的并发或 drain timeout，才用 CLI 参数或启动参数覆盖。
+## 进阶文件、启动参数和 runtime 的分工
 
-1. CLI 显式进程参数，例如 `--concurrency 12`。
-2. 创建 client/role 时的 runtime override。
+多数项目只需要文件里的默认值；只有某个 Worker 或 Coordinator 服务宿主需要临时不同的并发或 drain timeout，才在创建 role 时传启动参数。只有你刻意把 CLI 作为服务宿主时，才用它的可选参数覆盖。
+
+1. 创建 client/role 时传入的 runtime override。
+2. 刻意采用 CLI 服务宿主时的显式进程参数，例如 `--concurrency 12`。
 3. Queue 背压或 BatchRun 局部配置。
 4. 根级 Worker、Scheduler、retention、limits、deduplication 和 observability defaults。
 5. Queuebit 内建默认。
@@ -34,7 +36,6 @@ import { defineQueuebitConfig } from 'queuebit';
 
 export default defineQueuebitConfig({
   connection: { url: 'redis://127.0.0.1:6379/0' },
-  namespace: 'dev:demo',
   queues: { notification: {} }
 });
 ```

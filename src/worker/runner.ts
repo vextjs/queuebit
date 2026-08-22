@@ -114,7 +114,9 @@ class QueuebitWorkerRunner<Data = unknown, Result = unknown> implements Queuebit
     this.#drainingSince = undefined;
     this.#lastError = undefined;
     this.#observability.setGauge('worker_running', 1, this.#workerLabels());
-    void this.#heartbeat('running');
+    void this.#heartbeat('running').catch(cause => {
+      this.#lastError = serializeFailure(cause);
+    });
     this.#scheduleHeartbeat();
     this.#schedulePump(0);
   }

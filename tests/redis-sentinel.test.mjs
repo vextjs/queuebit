@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createClient } from '@redis/client';
 import test from 'node:test';
 import {
   createQueuebitClient,
@@ -14,8 +15,8 @@ try {
 }
 
 test(
-  'real Redis Sentinel target routes Queuebit commands through discovered primary',
-  target?.error ? { skip: String(target.error.message ?? target.error) } : {},
+  'real Redis Sentinel target routes Queuebit commands through discovered primary and optionally fails over safely',
+  target?.error ? { skip: String(target.error.message ?? target.error) } : { timeout: 60_000 },
   async () => {
     const namespace = `redis_sentinel:${Date.now()}:${Math.random().toString(16).slice(2)}`;
     const config = defineQueuebitConfig({
@@ -25,25 +26,71 @@ test(
         serverPolicy: { mode: 'warn' }
       }
     });
-    const cleanupConnection = createQueuebitRedisConnection(config, { name: `queuebit:${namespace}:cleanup` });
-    const cleanupRedis = await cleanupConnection.connect();
+    let cleanupConnection;
+    let cleanupRedis;
+    let client;
+    let testFailure;
 
     try {
+      cleanupConnection = createQueuebitRedisConnection(config, { name: `queuebit:${namespace}:cleanup` });
+      cleanupRedis = await cleanupConnection.connect();
       await cleanupNamespace(cleanupRedis, namespace);
-      const client = await createQueuebitClient({ config });
-      try {
-        const job = await client.jobs.add('notification', { kind: 'sentinel-smoke' });
-        const fetched = await client.jobs.get('notification', job.id);
+      client = await createQueuebitClient({ config });
+      const job = await client.jobs.add('notification', { kind: 'sentinel-smoke' });
+      const fetched = await client.jobs.get('notification', job.id);
 
-        assert.equal(config.connection.mode, 'sentinel');
-        assert.equal(fetched?.id, job.id);
-        assert.deepEqual(fetched?.data, { kind: 'sentinel-smoke' });
-      } finally {
+      assert.equal(config.connection.mode, 'sentinel');
+      assert.equal(fetched?.id, job.id);
+      assert.deepEqual(fetched?.data, { kind: 'sentinel-smoke' });
+
+      if (process.env.QUEUEBIT_REDIS_SENTINEL_ALLOW_FAILOVER === '1') {
         await client.close();
+        client = undefined;
+        await cleanupNamespace(cleanupRedis, namespace);
+        await cleanupConnection.close();
+        cleanupConnection = undefined;
+        cleanupRedis = undefined;
+
+        await requestSentinelFailover(target);
+        cleanupConnection = createQueuebitRedisConnection(
+          config,
+          { name: `queuebit:${namespace}:recovered-cleanup` }
+        );
+        cleanupRedis = await cleanupConnection.connect();
+        await cleanupNamespace(cleanupRedis, namespace);
+        client = await createQueuebitClient({ config });
+        const recoveredJob = await client.jobs.add('notification', { kind: 'sentinel-failover-smoke' });
+        const recoveredFetched = await client.jobs.get('notification', recoveredJob.id);
+        assert.equal(recoveredFetched?.id, recoveredJob.id);
+        assert.deepEqual(recoveredFetched?.data, { kind: 'sentinel-failover-smoke' });
       }
+    } catch (error) {
+      testFailure = error;
+      throw error;
     } finally {
-      await cleanupNamespace(cleanupRedis, namespace);
-      await cleanupConnection.close();
+      const cleanupFailures = [];
+      if (client !== undefined) {
+        try {
+          await client.close();
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      if (cleanupRedis !== undefined && cleanupConnection !== undefined) {
+        try {
+          await cleanupNamespace(cleanupRedis, namespace);
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+        try {
+          await cleanupConnection.close();
+        } catch (error) {
+          cleanupFailures.push(error);
+        }
+      }
+      if (cleanupFailures.length > 0 && testFailure === undefined) {
+        throw new AggregateError(cleanupFailures, 'Redis Sentinel test cleanup failed.');
+      }
     }
   }
 );
@@ -83,6 +130,54 @@ function getSentinelTargetFromEnv() {
       database: readIntegerEnv('QUEUEBIT_REDIS_DATABASE', 0, 0)
     }
   };
+}
+
+async function requestSentinelFailover(target) {
+  const sentinel = target.connection.sentinels[0];
+  const admin = createClient({
+    socket: { host: sentinel.host, port: sentinel.port },
+    ...(target.connection.sentinelUsername === undefined ? {} : { username: target.connection.sentinelUsername }),
+    ...(target.connection.sentinelPassword === undefined ? {} : { password: target.connection.sentinelPassword })
+  });
+  await admin.connect();
+  try {
+    const before = await readSentinelMasterAddress(admin, target.connection.masterName);
+    await waitFor(async () => {
+      try {
+        const reply = await admin.sendCommand(['SENTINEL', 'FAILOVER', target.connection.masterName]);
+        return String(reply).toUpperCase() === 'OK';
+      } catch {
+        return false;
+      }
+    }, 20_000, 'Sentinel did not accept a failover request.');
+    await waitFor(async () => {
+      const after = await readSentinelMasterAddress(admin, target.connection.masterName);
+      return after.host !== before.host || after.port !== before.port;
+    }, 30_000, 'Sentinel did not publish a replacement primary.');
+  } finally {
+    try {
+      await admin.quit();
+    } catch {
+      admin.disconnect();
+    }
+  }
+}
+
+async function readSentinelMasterAddress(admin, masterName) {
+  const reply = await admin.sendCommand(['SENTINEL', 'GET-MASTER-ADDR-BY-NAME', masterName]);
+  if (!Array.isArray(reply) || reply.length < 2) {
+    throw new Error(`Sentinel did not return a primary address for ${masterName}.`);
+  }
+  return { host: String(reply[0]), port: Number.parseInt(String(reply[1]), 10) };
+}
+
+async function waitFor(predicate, timeoutMs, message) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() <= deadline) {
+    if (await predicate()) return;
+    await new Promise(resolve => setTimeout(resolve, 200));
+  }
+  assert.fail(message);
 }
 
 function readIntegerEnv(name, fallback, min) {

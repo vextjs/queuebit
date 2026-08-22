@@ -2,7 +2,40 @@
 
 <span class="manual-label">参考 · 命令、JSON 和 exit code</span>
 
-CLI 是辅助工具，不是接入 Queuebit 的前提。普通项目可以直接在 Node 框架里 `createQueuebitClient()`，也可以写一个普通 `.js/.mjs` 文件启动 Worker；CLI 主要用于本地验证、启动后台角色、inspect、drain 和故障恢复。
+CLI 是可选的兼容和运维工具，不是 Queuebit 的默认运行时入口。正常接入时，应用代码调用 `createQueuebitClient()`、`client.createWorker()`，以及仅在 BatchRun 场景调用 `client.createCoordinatorRunner()`；进程管理器和关闭钩子由应用自己选择。CLI 适合本地验证、inspect、远程 drain、故障恢复，或明确选择 CLI 作为服务可执行文件的兼容场景。
+
+## 默认接入：从应用代码启动角色
+
+```ts
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from './queuebit.config.js';
+import runtime from './queuebit.runtime.js';
+
+const queuebit = await createQueuebitClient({ config });
+
+const worker = queuebit.createWorker(
+  'notification',
+  createQueuebitRuntimeProcessor(runtime),
+  { workerId: 'worker-a', concurrency: 8 }
+);
+worker.start();
+
+// 只有推进 BatchRun 的独立服务宿主才创建它。
+const coordinator = queuebit.createCoordinatorRunner(runtime, {
+  coordinatorId: 'coordinator-a',
+  concurrency: 2,
+  onError: event => console.error('Queuebit coordinator error', event)
+});
+coordinator.start();
+
+// 从服务宿主自己的 shutdown 生命周期调用。
+await queuebit.close({ timeoutMs: 60_000 });
+```
+
+生产环境中 Worker 和 Coordinator 应运行在不同服务宿主里；上例把两个 factory 放在一起，只是为了展示公开 API。Queuebit 没有 import 时副作用，也不会注册 signal handler。将 `onError` 接到应用已有 logger，并用 `coordinator.status().lastError` 监控 CoordinatorRunner。
 
 ## 通用规则
 
@@ -12,7 +45,9 @@ CLI 是辅助工具，不是接入 Queuebit 的前提。普通项目可以直接
 - inspect 默认表格，`--json` 提供稳定机器输出。
 - 本页多行命令默认使用 Bash 反斜杠续行；PowerShell 请使用单行命令，或写一个 JS 启动文件。
 
-## 启动角色
+## 可选的 CLI 角色宿主
+
+只有在你明确希望把 Queuebit CLI 作为后台服务可执行文件时才使用这些命令。它们是上方代码的兼容替代，不是框架接入的必需项。
 
 ```bash
 npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification
@@ -21,15 +56,27 @@ npx queuebit coordinator start --config queuebit.config.ts --runtime queuebit.ru
 
 v0.1 只提供 cooperative 时间推进，由后台 Worker 候选者竞争单活 owner，不启动独立 Scheduler。`scheduler start/inspect/drain` 不属于 v0.1 命令；传入时返回 exit code 2 与 `QB_CLI_COMMAND_UNSUPPORTED`，避免脚本误以为角色已启动。
 
-在框架里接入时，也可以不用 CLI 启动 Web/API；Web 进程只负责调用 `jobs.add()` 或 `runs.start()`。Worker 可以用 CLI 启动，也可以用你自己的 Node 启动文件包装同一套配置和 runtime。
+框架接入时，Web/API、Worker 和 Coordinator 都不需要 CLI 启动。Web/API 代码调用 `jobs.add()` 或 `runs.start()`；应用自己的服务宿主负责构造、启动和关闭 Worker/Coordinator 对象。
 
-## Run 命令
+## Run 命令（手工或运维用途）
+
+正常业务代码在服务端推导 tenant 和业务输入后调用 `queuebit.runs.start(...)` 创建 BatchRun。`run start` 用于本地/手工恢复或运维测试，不是常规请求链路的接入方式。
+
+```ts
+await queuebit.runs.start('receipt-campaign', {
+  input: { tenantId: actor.tenantId, paidBefore: request.paidBefore },
+  idempotencyKey: `receipt:${actor.tenantId}:${request.paidBefore}`
+});
+```
 
 ```bash
+TENANT_ID='<已授权事件记录中的 tenant>'
+PAID_BEFORE='<已批准的 ISO-8601 campaign boundary>'
+
 npx queuebit run start receipt-campaign \
   --config queuebit.config.ts \
-  --input-json '{"tenantId":"tenant-42","paidBefore":"2026-07-15T00:00:00.000Z"}' \
-  --idempotency-key 'receipt-campaign:tenant-42:2026-07-15'
+  --input-json "{\"tenantId\":\"${TENANT_ID}\",\"paidBefore\":\"${PAID_BEFORE}\"}" \
+  --idempotency-key "receipt:${TENANT_ID}:${PAID_BEFORE}"
 
 npx queuebit run inspect <runId> --config queuebit.config.ts
 npx queuebit run list --definition receipt-campaign --state partial_failed --limit 100 --config queuebit.config.ts
@@ -72,13 +119,13 @@ npx queuebit worker drain --queue notification --worker-id worker-a --reason rol
 npx queuebit coordinator drain --coordinator-id coordinator-a --reason rolling-release --config queuebit.config.ts
 ```
 
-start 命令收到 SIGTERM 自动 drain。超时时停止续租并非零退出，不伪造 active work 已失败/取消。
+可选 CLI 角色宿主收到 SIGTERM 时自动 drain。SDK Worker/CoordinatorRunner 只有在服务宿主调用 `drain()` 或 `queuebit.close()` 时才 drain。超时时角色停止续租并报告失败，不伪造 active work 已失败/取消。
 
 ## Exit code
 
 | code | 含义 |
 |---:|---|
-| 0 | 成功；长运行角色完成优雅 drain |
+| 0 | 成功；可选的长运行 CLI 角色完成优雅 drain |
 | 1 | 操作失败或角色异常终止 |
 | 2 | 参数、配置、runtime registration 或 loader 错误 |
 | 3 | Redis/依赖暂不可用，调用方可根据 `retryable` 退避 |

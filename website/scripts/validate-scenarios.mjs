@@ -333,8 +333,10 @@ for (const language of ['en', 'zh']) {
   const quickStart = await readDoc(language, 'quick-start.md');
   for (const token of [
     'queuebit.jobs.add(',
-    'npx queuebit worker start',
-    'npx queuebit job inspect <jobId>'
+    'createQueuebitClient(queuebitConfig)',
+    'queuebit.createWorker(',
+    'worker.start()',
+    'queuebit.close('
   ]) {
     if (!quickStart.includes(token)) {
       errors.push(`${language}/quick-start.md: missing first-job token ${token}`);
@@ -347,8 +349,16 @@ for (const language of ['en', 'zh']) {
     'completionState=not_created',
     '"deduplicated": false',
     'blockedReason',
-    'lastError'
+    'lastError',
+    'title="queuebit.runtime.ts"',
+    'npx queuebit job inspect <jobId>'
   ]);
+  if (quickStart.toLowerCase().includes('docker')) {
+    errors.push(`${language}/quick-start.md: Docker instructions belong outside Quick Start`);
+  }
+  if (/^\s*namespace:\s*/m.test(quickStart)) {
+    errors.push(`${language}/quick-start.md: use the automatic application namespace in Quick Start`);
+  }
 
   const batchRun = await readDoc(language, 'batch-runs.md');
   const stageCount = (batchRun.match(/class="qb-flow-stage(?: qb-flow-stage--final)?"/g) ?? []).length;
@@ -361,17 +371,26 @@ for (const language of ['en', 'zh']) {
     errors.push(`${language}/batch-runs.md: missing unreleased example boundary`);
   }
   for (const token of [
-    'message=Queuebit configuration is valid.',
-    'config.namespace=receipt-demo',
-    'validation.sources=paid-orders',
+    'ReceiptRepository',
+    'startReceiptWorker',
+    'startReceiptCoordinator',
+    'CoordinatorRunner',
+    'status().lastError',
+    'onError',
+    'AuthenticatedReceiptActor',
+    'actor.tenantId',
     "queuebit.runs.start('receipt-campaign'",
     'idempotencyKey'
   ]) {
     if (!batchRun.includes(token)) {
-      errors.push(`${language}/batch-runs.md: missing current CLI/SDK truth token ${token}`);
+      errors.push(`${language}/batch-runs.md: missing current code-first truth token ${token}`);
     }
   }
-  assertContainsNone(batchRun, `${language}/batch-runs.md`, ['blockedReason', 'lastError']);
+  assertContainsNone(batchRun, `${language}/batch-runs.md`, [
+    'blockedReason',
+    'app.queuebit.runs.start',
+    "tenantId: 'tenant-42'"
+  ]);
 }
 
 const quickStartCodeFencesEn = collectCodeFenceLanguages(await readDoc('en', 'quick-start.md'));
@@ -384,24 +403,39 @@ const accessibilitySource = await readFile(
   path.join(websiteDir, 'components', 'A11yLabels.tsx'),
   'utf8'
 );
-for (const token of [
-  'closeMenu:',
-  "setAttribute('aria-expanded'",
-  "querySelector<HTMLElement>('.rp-nav-screen')",
-  "navScreen.id = 'queuebit-nav-screen'",
-  "setAttribute('aria-controls', navScreen.id)",
-  "removeAttribute('aria-controls')",
-  "'.rp-nav-screen--open'",
-  "'.rp-nav-hamburger__sm.rp-nav-hamburger--active'",
-  'requestAnimationFrame(() => navMenu.focus())'
-]) {
-  if (!accessibilitySource.includes(token)) {
-    errors.push(`A11yLabels.tsx: missing mobile navigation contract token ${token}`);
-  }
-}
+assertContainsAll(accessibilitySource, 'A11yLabels.tsx release banner', [
+  'useLang()',
+  "title: 'v0.1 预览文档'",
+  "title: 'v0.1 preview documentation'",
+  'className="qb-release-banner"',
+  'role="status"',
+  'aria-live="polite"'
+]);
+assertContainsAll(accessibilitySource, 'A11yLabels.tsx mobile documentation sidebar', [
+  'useEffect(',
+  "window.matchMedia('(max-width: 768px)')",
+  "sidebarSelector = '.rp-doc-layout__sidebar'",
+  "openClass = 'rp-doc-layout__sidebar--open'",
+  "event.target.closest('.rp-sidebar-menu__left')",
+  "document.addEventListener('click', handleDocumentClick, true)",
+  "menuButton.setAttribute('aria-controls', sidebar.id)",
+  "menuButton.setAttribute('aria-expanded', String(mobileSidebarOpen))",
+  'className="qb-mobile-sidebar-mask"',
+  'aria-label={copy.closeMenu}'
+]);
+assertContainsNone(accessibilitySource, 'A11yLabels.tsx unsupported global mutation', [
+  'MutationObserver',
+  'document.body'
+]);
 
 const styles = await readFile(path.join(websiteDir, 'styles', 'queuebit.css'), 'utf8');
-for (const token of ['.qb-canonical-flow', '.qb-flow-stage', '.qb-flow-arrow']) {
+for (const token of [
+  '.qb-canonical-flow',
+  '.qb-flow-stage',
+  '.qb-flow-arrow',
+  '.qb-mobile-sidebar-mask',
+  '.rp-doc-layout__sidebar.rp-doc-layout__sidebar--open'
+]) {
   if (!styles.includes(token)) {
     errors.push(`queuebit.css: missing canonical flow style ${token}`);
   }
@@ -424,6 +458,19 @@ function collectReadmeBoundaryErrors(source) {
     || !source.includes('Node.js `>=20.19`')) {
     issues.push('README: core and vext Node baselines are not separated');
   }
+  for (const token of [
+    'npm run docs:preview',
+    'http://localhost:4180/queuebit/',
+    'http://localhost:4180/queuebit/zh/',
+    'npm run docs:dev',
+    '127.0.0.1:4181',
+    'npm run docs:edit',
+    '127.0.0.1:4182'
+  ]) {
+    if (!source.includes(token)) {
+      issues.push(`README: missing stable local docs token ${token}`);
+    }
+  }
   return issues;
 }
 
@@ -441,9 +488,35 @@ if (!collectReadmeBoundaryErrors(relativeReadme)
 const packageMetadata = JSON.parse(
   await readFile(path.join(repoDir, 'package.json'), 'utf8')
 );
+const websitePackageMetadata = JSON.parse(
+  await readFile(path.join(websiteDir, 'package.json'), 'utf8')
+);
 const packageFiles = [...(packageMetadata.files ?? [])].sort();
 if (!sameMembers(packageFiles, ['LICENSE', 'README.md', 'dist'])) {
   errors.push(`package.json: expected files LICENSE|README.md|dist, received ${packageFiles.join('|')}`);
+}
+if (packageMetadata.scripts?.['docs:preview']
+  !== 'npm run docs:build && npm --prefix website run preview') {
+  errors.push('package.json: docs:preview must build then serve the fixed preview port');
+}
+if (packageMetadata.scripts?.['docs:dev']
+  !== 'npm run docs:build && npm --prefix website run dev') {
+  errors.push('package.json: docs:dev must build then delegate to the fixed 4181 generated preview script');
+}
+if (packageMetadata.scripts?.['docs:edit'] !== 'npm --prefix website run edit') {
+  errors.push('package.json: docs:edit must delegate to the fixed 4182 hot-edit script');
+}
+if (websitePackageMetadata.scripts?.preview
+  !== 'rspress preview --port 4180 --host 127.0.0.1') {
+  errors.push('website/package.json: preview must pin 127.0.0.1:4180');
+}
+if (websitePackageMetadata.scripts?.dev
+  !== 'rspress preview --port 4181 --host 127.0.0.1') {
+  errors.push('website/package.json: dev must pin generated preview to 127.0.0.1:4181');
+}
+if (websitePackageMetadata.scripts?.edit
+  !== 'rspress dev --port 4182 --host 127.0.0.1') {
+  errors.push('website/package.json: edit must pin hot dev to 127.0.0.1:4182');
 }
 
 const legacyFiles = (
@@ -546,7 +619,34 @@ for (const language of ['en', 'zh']) {
       errors.push(`${language}/cli-reference.md: missing Scheduler rejection token ${token}`);
     }
   }
+  assertContainsAll(cli, `${language}/cli-reference.md: code-first runtime contract`, [
+    'createQueuebitRuntimeProcessor',
+    'createCoordinatorRunner',
+    'queuebit.close({ timeoutMs: 60_000 })',
+    'npx queuebit worker start',
+    'npx queuebit coordinator start',
+    'TENANT_ID=',
+    'PAID_BEFORE=',
+    '${TENANT_ID}',
+    '${PAID_BEFORE}'
+  ]);
+  assertContainsNone(cli, `${language}/cli-reference.md: hard-coded business identity`, [
+    'tenant-42',
+    'tenant-demo'
+  ]);
   assertRemoteDrainCommandsDoNotUseTimeout(cli, `${language}/cli-reference.md`);
+
+  const targetApi = await readDoc(language, 'target-api.md');
+  const targetIdentityPhrase = language === 'zh' ? 'Queuebit 不会' : 'Queuebit does not';
+  assertContainsAll(targetApi, `${language}/target-api.md: server-derived Run identity`, [
+    'actor.tenantId',
+    'request.paidBefore',
+    targetIdentityPhrase
+  ]);
+  assertContainsNone(targetApi, `${language}/target-api.md: hard-coded business identity`, [
+    'tenant-42',
+    'tenant-demo'
+  ]);
 
   const redisModel = await readDoc(language, 'redis-model.md');
   for (const token of ['SCAN qb:{namespace}:*', 'FLUSHDB', 'FLUSHALL', 'SCRIPT FLUSH']) {
@@ -592,7 +692,11 @@ for (const language of ['en', 'zh']) {
     'QB_RUN_STATE_CONFLICT',
     'completionEvents.ageMs/maxCount',
     '| `concurrency` | 1',
-    '| `drainTimeoutMs` | 60000'
+    '| `drainTimeoutMs` | 60000',
+    'client.createCoordinatorRunner(runtime, options)',
+    '| `completionLimit` | 25',
+    'status().lastError',
+    'QB_COORDINATOR_DRAIN_TIMEOUT'
   ]) {
     if (!configContract.includes(token)) {
       errors.push(`${language}/cli-and-config.md: missing exact config token ${token}`);
@@ -631,12 +735,18 @@ for (const language of ['en', 'zh']) {
     'QUEUEBIT_REDIS_URL',
     'QUEUEBIT_REDIS_HOST',
     'QUEUEBIT_REDIS_SENTINEL_MASTER',
-    'QUEUEBIT_REDIS_SENTINELS'
+    'QUEUEBIT_REDIS_SENTINELS',
+    'startWorkerHost',
+    'startCoordinatorHost',
+    'createQueuebitRuntimeProcessor',
+    'createCoordinatorRunner',
+    "logger.error({ event }, 'Queuebit coordinator error')"
   ]) {
     if (!productionDeployment.includes(token)) {
       errors.push(`${language}/production-deployment.md: missing target evidence env token ${token}`);
     }
   }
+  assertContainsNone(productionDeployment, `${language}/production-deployment.md`, ['productionLogger']);
 }
 
 const runtimeApiSource = await readRepoFile('src/runtime/api.ts');
@@ -645,7 +755,22 @@ assertContainsAll(runtimeApiSource, 'src/runtime/api.ts', [
   'export function defineQueuebitSource',
   'export function defineQueuebitMapper',
   'export function defineQueuebitCompletionHandler',
-  'export function defineQueuebitProcessor'
+  'export function defineQueuebitProcessor',
+  'export function createQueuebitRuntimeProcessor'
+]);
+
+const coordinatorRunnerSource = await readRepoFile('src/coordinator/runner.ts');
+assertContainsAll(coordinatorRunnerSource, 'src/coordinator/runner.ts', [
+  'export function createQueuebitCoordinatorRunner',
+  "code: 'QB_COORDINATOR_DRAIN_TIMEOUT'",
+  '#recordError',
+  'onError'
+]);
+const clientSource = await readRepoFile('src/client.ts');
+assertContainsAll(clientSource, 'src/client.ts: code-first role lifecycle', [
+  'createCoordinatorRunner(',
+  'coordinatorRunners',
+  'runner.stop(closeOptions)'
 ]);
 
 const configSource = await readRepoFile('src/config.ts');
@@ -763,7 +888,7 @@ assertContainsAll(exampleRuntime, 'examples/receipt-batch-vext/queuebit.runtime.
   'defineQueuebitMapper',
   'defineQueuebitProcessor',
   'defineQueuebitCompletionHandler',
-  'boundary: { maxId }',
+  'boundary: { maxId: boundary.maxId }',
   'return null',
   'identity:',
   'idempotencyKey:'
@@ -772,7 +897,31 @@ assertContainsNone(exampleRuntime, 'examples/receipt-batch-vext/queuebit.runtime
   'defineBatchSource',
   'defineBatchMapper',
   'defineCompletionHandler',
-  'defineJobProcessor'
+  'defineJobProcessor',
+  'const orders'
+]);
+const exampleRepository = await readRepoFile('examples/receipt-batch-vext/receipt-repository.ts');
+assertContainsAll(exampleRepository, 'examples/receipt-batch-vext/receipt-repository.ts', [
+  'freezePaidOrders',
+  'loadPaidOrders',
+  'sendReceipt',
+  'recordReceiptBatchCompletion',
+  'recordReceiptRunCompletion'
+]);
+const exampleServices = await readRepoFile('examples/receipt-batch-vext/receipt-services.ts');
+assertContainsAll(exampleServices, 'examples/receipt-batch-vext/receipt-services.ts', [
+  'startReceiptWorker',
+  'startReceiptCoordinator',
+  'createQueuebitRuntimeProcessor',
+  'createCoordinatorRunner',
+  'client.close(closeOptions)'
+]);
+const exampleCampaign = await readRepoFile('examples/receipt-batch-vext/start-receipt-campaign.ts');
+assertContainsAll(exampleCampaign, 'examples/receipt-batch-vext/start-receipt-campaign.ts', [
+  'AuthenticatedReceiptActor',
+  'actor.tenantId',
+  "queuebit.runs.start('receipt-campaign'",
+  'idempotencyKey'
 ]);
 
 if (errors.length > 0) {

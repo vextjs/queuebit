@@ -20,7 +20,7 @@ You do not need every detail on this page for a first integration. Come back whe
 This example demonstrates a receipt batch that should not wait inside one slow HTTP request. The short version: **Web creates the Run; the Coordinator pages and dispatches; Workers execute jobs; completion records batch and final results.**
 
 <div class="qb-canonical-flow" role="img" aria-label="Find paid orders in the database, create a batch run, split records into background jobs, send receipts with multiple workers, and record batch and final results">
-  <div class="qb-flow-stage"><span class="qb-flow-step">01 FIND ORDERS</span><strong>Seed example orders and fix the range</strong><span>23 paid orders → example database → process only through boundary.maxId</span></div>
+  <div class="qb-flow-stage"><span class="qb-flow-step">01 FIND ORDERS</span><strong>Query paid orders and freeze a boundary</strong><span>Your repository defines the tenant query → process only through boundary.maxId</span></div>
   <span class="qb-flow-arrow" aria-hidden="true">→</span>
   <div class="qb-flow-stage"><span class="qb-flow-step">02 CREATE BATCH</span><strong>Web records the batch request</strong><span>POST /receipt-campaigns → return runId immediately</span></div>
   <span class="qb-flow-arrow" aria-hidden="true">→</span>
@@ -31,81 +31,83 @@ This example demonstrates a receipt batch that should not wait inside one slow H
   <div class="qb-flow-stage qb-flow-stage--final"><span class="qb-flow-step">05 RECORD RESULTS</span><strong>Record each batch, then the Run</strong><span>Advance checkpoint after each batch; write run completion after all orders finish</span></div>
 </div>
 
-Prerequisites: Node.js `>=20.19`, Docker Compose, and npm. The example touches only its own Redis/database containers and volumes; if a port is occupied, use the override printed by the script. The full boundary lives in [Can my environment use Queuebit?](./compatibility.md).
-
-> Release status: if the installed package or source example prints `target-contract skeleton`, the full batch example is not published as a runnable path yet. Do not treat that message as a Redis or local machine failure. First get a normal background job working in [Quick Start](./quick-start.md).
+The checked source template is [`examples/receipt-batch-vext`](https://github.com/devcodex-labs/queuebit/tree/main/examples/receipt-batch-vext). It intentionally contains no fake in-memory orders: your application implements `ReceiptRepository` with its real database, then passes it to the Queuebit service functions. Run the type contract check after adapting it:
 
 ```bash
 cd examples/receipt-batch-vext
-npm install
-npm run infra:up
-npm run infra:health
+npm run typecheck
 ```
 
-Seed local fixtures:
+> Release boundary: the infrastructure scripts still print `target-contract skeleton` because a clean-environment Redis/database fixture is not published yet. That is not the normal integration path and is not a Redis diagnosis. The code-first services below are the supported API contract.
 
-```bash
-npm run seed
+### Worker service host
+
+Start each Worker from the service composition root you already deploy. The host can be a vext bootstrap, a container, systemd, or any process manager; Queuebit does not prescribe the command.
+
+```ts title="receipt-worker-service.ts"
+import { startReceiptWorker } from './receipt-services.js';
+import { receiptRepository } from './your-database-composition.js';
+
+const receiptWorker = await startReceiptWorker(receiptRepository, {
+  workerId: 'receipt-worker-a',
+  concurrency: 8
+});
+
+// Call from the host's own shutdown lifecycle.
+await receiptWorker.stop({ timeoutMs: 60_000 });
 ```
 
-Expected:
+Run the same code in another host with a different `workerId` for more throughput. Every host shares Redis, `namespace`, and queue name; Worker concurrency is local to that host.
 
-```text
-tenant=tenant-demo
-orders.inserted=24
-orders.paid=23
-orders.withReceiptEmail=21
-orders.expectedSkipped=2
+### Coordinator service host
+
+Start one or more CoordinatorRunner instances from application code only when this BatchRun definition is used:
+
+```ts title="receipt-coordinator-service.ts"
+import { startReceiptCoordinator } from './receipt-services.js';
+import { receiptRepository } from './your-database-composition.js';
+
+const receiptCoordinator = await startReceiptCoordinator(receiptRepository, {
+  coordinatorId: 'receipt-coordinator-a',
+  concurrency: 2,
+  pollIntervalMs: 1_000,
+  onError: event => console.error('Queuebit coordinator error', event)
+});
+
+// Call from the host's own shutdown lifecycle.
+await receiptCoordinator.stop({ timeoutMs: 60_000 });
 ```
 
-Validate config and runtime registrations:
+`CoordinatorRunner` owns one polling loop at a time, delivers due completion events, advances up to `concurrency` Runs per tick, heartbeats its Redis role, and exposes failures through `status().lastError` and `onError`. Replace `console.error` with the logger already owned by your service host. It has no import-time side effects and does not attach process signal handlers.
 
-```bash
-npx queuebit config validate --config queuebit.config.ts --runtime queuebit.runtime.ts
+### Web/API starts the Run
+
+The request path authenticates the caller and derives `tenantId` on the server. It does not select orders or call a Worker directly.
+
+```ts
+import type { QueuebitClient } from 'queuebit';
+
+interface AuthenticatedReceiptActor {
+  tenantId: string;
+}
+
+interface StartReceiptCampaignRequest {
+  paidBefore: string;
+}
+
+export async function startReceiptCampaign(
+  queuebit: QueuebitClient,
+  actor: AuthenticatedReceiptActor,
+  request: StartReceiptCampaignRequest
+) {
+  return queuebit.runs.start('receipt-campaign', {
+    input: { tenantId: actor.tenantId, paidBefore: request.paidBefore },
+    idempotencyKey: `receipt:${actor.tenantId}:${request.paidBefore}`
+  });
+}
 ```
 
-Expected shape:
-
-```text
-message=Queuebit configuration is valid.
-config.namespace=receipt-demo
-config.queues=notification
-config.batchRuns=receipt-campaign
-validation.runtime=loaded
-validation.sources=paid-orders
-validation.mappers=receipt-jobs
-validation.processors=send-receipt
-validation.completions=record-receipt-batch-result,record-receipt-run-result
-```
-
-Start four terminals:
-
-```bash title="Terminal A · vext Web"
-npm run start:web
-```
-
-```bash title="Terminal B · Coordinator"
-npx queuebit coordinator start --config queuebit.config.ts --runtime queuebit.runtime.ts
-```
-
-```bash title="Terminal C · Worker A"
-npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification --worker-id worker-a
-```
-
-```bash title="Terminal D · Worker B"
-npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification --worker-id worker-b
-```
-
-Inside the vext route, the handler calls `app.queuebit.runs.start('receipt-campaign', { input, idempotencyKey })`. The HTTP layer owns authentication and business input; Queuebit owns durable Run identity, paging, dispatch, Worker execution, and completion delivery.
-
-```bash
-curl -i http://127.0.0.1:4100/receipt-campaigns \
-  -H "Authorization: Bearer local-demo-user" \
-  -H "Content-Type: application/json" \
-  --data '{"paidBefore":"2026-07-15T00:00:00.000Z"}'
-```
-
-Expected HTTP 202:
+Expected HTTP 202 payload shape:
 
 ```json
 {
@@ -118,9 +120,11 @@ Expected HTTP 202:
 
 The first creation response is always `created + not_created`; the Coordinator advances the Run to `running` asynchronously. Retrying the same authenticated business request returns the same `runId`, its current snapshot, and `deduplicated: true`. The same key with different input returns 409 `QB_RUN_DEDUPLICATION_CONFLICT`.
 
-```bash
-npx queuebit run inspect <runId> --config queuebit.config.ts
-npx queuebit workers inspect --queue notification --config queuebit.config.ts
+Use application APIs for live status. The CLI equivalents remain optional operator tools:
+
+```ts
+const snapshot = await queuebit.runs.get(run.id);
+const workers = await queuebit.roles.list({ role: 'worker', domain: 'notification' });
 ```
 
 An in-flight snapshot can show:
@@ -139,13 +143,7 @@ activeWorkers=worker-a,worker-b
 
 `dispatchCursor > checkpointCursor` is not data loss. It means later batches are durable while an earlier execution or completion barrier has not passed yet. `not_created` means the Run is not execution-terminal, so no run-completion event exists yet.
 
-Verify final evidence:
-
-```bash
-npm run audit:show -- --run <runId>
-```
-
-Expected:
+Your completion handlers should persist final evidence with this shape:
 
 ```text
 batchCompletions=3
@@ -193,6 +191,8 @@ stateDiagram-v2
 Text equivalent: decide which orders belong to this run; let the Coordinator read one page by cursor; save that page and its jobs together; let Workers send receipts for that batch; record the batch result before advancing "how far is complete" and reading the next page; when no page remains, record final Run completion. Queuebit stores the processing range, current position, batches/jobs, failure details, and completion state in Redis, so a crash can resume from the saved position.
 
 ## 1. Define a finite processing range
+
+`getDb()` below is a placeholder for the repository or ORM your application already owns. It is not a Queuebit API or a global database connection supplied by Queuebit. In production, inject the business repository through the service composition root, as in `examples/receipt-batch-vext/receipt-repository.ts`.
 
 ```ts
 sources: {
@@ -349,12 +349,18 @@ Execution tells you whether the business jobs finished. Completion tells you whe
 
 ## 5. Start and control a run
 
+Inside the same authenticated application service, reuse the earlier method instead of hard-coding a tenant or an order boundary in job code:
+
 ```ts
-const run = await queuebit.runs.start('receipt-campaign', {
-  input: { tenantId: 'tenant-42', paidBefore: '2026-07-15T00:00:00.000Z' },
-  idempotencyKey: 'receipt-campaign:tenant-42:2026-07-15'
-});
+const run = await startReceiptCampaign(queuebit, actor, request);
+const snapshot = await queuebit.runs.get(run.id);
+
+await queuebit.runs.pause(run.id);
+await queuebit.runs.resume(run.id);
+await queuebit.runs.cancel(run.id, { reason: 'campaign withdrawn' });
 ```
+
+If operators also need a command-line entrypoint, these are equivalent optional operations, not the normal application integration path:
 
 ```bash
 npx queuebit run inspect <runId> --config queuebit.config.ts

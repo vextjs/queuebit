@@ -13,8 +13,8 @@
 |---|---|---|
 | `src/plugins/queuebit.ts` | 创建 vext plugin，注入 `app.queuebit` | Web 进程只做 Producer |
 | vext route | 认证、校验输入、调用 `app.queuebit.jobs.add` | tenant 必须服务端推导 |
-| Worker 进程 | 执行业务 processor | 独立启动，不跟随 `vext start` |
-| Coordinator 进程 | 只在 BatchRun 场景推进数据库分页 | 普通 job 不需要 |
+| Worker 服务 | 通过 `client.createWorker()` 执行业务 processor | 独立启动，不跟随 `vext start` |
+| Coordinator 服务 | 通过 `client.createCoordinatorRunner()` 推进数据库分页 | 普通 job 不需要 |
 | metrics/readiness | 由 vext 应用自己挂载和保护 | Queuebit core 不开隐藏 HTTP server |
 
 ```mermaid
@@ -142,29 +142,63 @@ export default defineRoutes((app) => {
 | Redis 不可用 / strict policy 失败 | 503 | 不要伪装成已受理 |
 | 未知错误 | 500 | 不返回 stack、cause 或完整 input |
 
-## 5. 分别启动 Web 和 Worker
+## 5. 用代码启动 Web、Worker 和 Coordinator
 
 ```bash title="Web / Producer"
 vext start
 ```
 
-```bash title="Worker"
-npx queuebit worker start --config queuebit.config.ts --runtime queuebit.runtime.ts --queue notification
+用代码创建角色服务。它们不一定要由 vext app 自己承载；可以放在你部署决定的独立 Node 进程、容器或服务框架中。
+
+```ts title="src/services/queuebit-worker.ts"
+import {
+  createQueuebitClient,
+  createQueuebitRuntimeProcessor
+} from 'queuebit';
+import config from '../../queuebit.config.js';
+import runtime from '../../queuebit.runtime.js';
+
+export async function startQueuebitWorker(workerId: string) {
+  const client = await createQueuebitClient({ config });
+  const worker = client.createWorker(
+    'notification',
+    createQueuebitRuntimeProcessor(runtime),
+    { workerId, concurrency: 4 }
+  );
+  worker.start();
+  return { worker, stop: () => client.close({ timeoutMs: 60_000 }) };
+}
 ```
 
-只有使用 BatchRun 时，才再启动 Coordinator：
+只有 BatchRun definition 才创建 CoordinatorRunner：
 
-```bash title="Coordinator · BatchRun only"
-npx queuebit coordinator start --config queuebit.config.ts --runtime queuebit.runtime.ts
+```ts title="src/services/queuebit-coordinator.ts"
+import { createQueuebitClient } from 'queuebit';
+import config from '../../queuebit.config.js';
+import runtime from '../../queuebit.runtime.js';
+
+export async function startQueuebitCoordinator(
+  coordinatorId: string,
+  logger: { error(context: unknown, message: string): void }
+) {
+  const client = await createQueuebitClient({ config });
+  const coordinator = client.createCoordinatorRunner(runtime, {
+    coordinatorId,
+    concurrency: 2,
+    onError: event => logger.error({ event }, 'Queuebit coordinator error')
+  });
+  coordinator.start();
+  return { coordinator, stop: () => client.close({ timeoutMs: 60_000 }) };
+}
 ```
 
-v0.1 用户路径使用上述 core CLI 角色命令。不要寻找 vext 专用的 Worker/Coordinator 启动入口；只有未来版本明确发布这些入口时，才改用对应路径。
+在你自己的服务宿主生命周期里调用返回的 `stop()`。多个 Worker 宿主和多个 CoordinatorRunner 宿主可以安全连接同一个 Redis namespace；角色分别 heartbeat，Run lease 会隔离并发推进。CLI role 命令只保留为可选兼容工具，不是 vext 接入要求。
 
 ## 6. reload 和关闭
 
 - Web reload 会触发 plugin `onClose`，释放当前 client 连接。
 - 关闭 Web 不会取消 Redis 中已存在的 jobs/runs。
-- Worker/Coordinator 有自己的 SIGTERM drain，不绑定 Web reload。
+- Worker/Coordinator 只有在服务宿主调用 `client.close()` 或观测到远程 role drain 时才会 drain；Queuebit 不会偷偷注册 SIGTERM handler。
 - `queuebit.runtime.ts` import 不建立 DB/HTTP 连接；只有当前角色激活对应 factory 才打开资源。
 
 ## 7. 上线前验收

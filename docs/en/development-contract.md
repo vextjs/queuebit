@@ -68,7 +68,9 @@ npm run docs:build
 npm run docs:preview
 ```
 
-You can also work inside `website/` with `npm run dev`, `npm run build`, and `npm run preview`. The root package only proxies scripts; `website/` owns documentation dependencies.
+`npm run docs:preview` builds the site and serves the stable handoff URL `http://localhost:4180/queuebit/`; Chinese pages are under `http://localhost:4180/queuebit/zh/`. `npm run docs:dev` serves the same generated-site behavior on `http://127.0.0.1:4181/queuebit/`. `npm run docs:edit` is only for editing and uses `http://127.0.0.1:4182/queuebit/`.
+
+You can also work inside `website/` with `npm run dev`, `npm run build`, and `npm run preview`. The root package pins the local documentation ports; `website/` owns documentation dependencies.
 
 ## Acceptance route
 

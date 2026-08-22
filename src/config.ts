@@ -1,5 +1,8 @@
 import Ajv2020 from 'ajv/dist/2020.js';
 import addFormats from 'ajv-formats';
+import { createHash } from 'node:crypto';
+import { readFileSync } from 'node:fs';
+import { dirname, resolve } from 'node:path';
 import { QueuebitError } from './errors';
 
 export type ServerPolicyMode = 'warn' | 'strict';
@@ -222,7 +225,7 @@ export interface QueuebitConfig {
   limits: Required<QueuebitLimitsConfig>;
 }
 
-const builtInDefaults: QueuebitConfig = {
+const builtInDefaults: Omit<QueuebitConfig, 'namespace'> = {
   connection: {
     mode: 'direct',
     host: '127.0.0.1',
@@ -240,7 +243,6 @@ const builtInDefaults: QueuebitConfig = {
     },
     serverPolicy: { mode: 'warn' }
   },
-  namespace: 'default',
   workerDefaults: {
     concurrency: 1,
     leaseMs: 30_000,
@@ -832,7 +834,7 @@ function mergeObservability(
 function mergeConfig(input: QueuebitUserConfig): QueuebitConfig {
   return {
     connection: mergeConnection(input.connection),
-    namespace: input.namespace ?? builtInDefaults.namespace,
+    namespace: resolveNamespace(input.namespace),
     workerDefaults: {
       concurrency: input.workerDefaults?.concurrency ?? builtInDefaults.workerDefaults.concurrency,
       leaseMs: input.workerDefaults?.leaseMs ?? builtInDefaults.workerDefaults.leaseMs,
@@ -878,6 +880,73 @@ function mergeConfig(input: QueuebitUserConfig): QueuebitConfig {
       maxBulkBytes: input.limits?.maxBulkBytes ?? builtInDefaults.limits.maxBulkBytes
     }
   };
+}
+
+function resolveNamespace(explicitNamespace: string | undefined): string {
+  if (explicitNamespace !== undefined) return explicitNamespace;
+
+  const environmentNamespace = process.env.QUEUEBIT_NAMESPACE;
+  if (environmentNamespace !== undefined) return assertNamespace(environmentNamespace, 'QUEUEBIT_NAMESPACE');
+
+  const packageName = findNearestPackageName(process.cwd());
+  return namespaceFromPackageName(packageName);
+}
+
+function findNearestPackageName(startDirectory: string): string {
+  let directory = resolve(startDirectory);
+  while (true) {
+    const packagePath = `${directory}/package.json`;
+    try {
+      const manifest = JSON.parse(readFileSync(packagePath, 'utf8')) as { name?: unknown };
+      if (typeof manifest.name !== 'string' || manifest.name.length === 0) {
+        throw namespaceConfigError(`${packagePath} must contain a non-empty package name.`);
+      }
+      return manifest.name;
+    } catch (cause) {
+      if (cause instanceof QueuebitError) throw cause;
+      if (isMissingFileError(cause)) {
+        const parent = dirname(directory);
+        if (parent !== directory) {
+          directory = parent;
+          continue;
+        }
+        break;
+      }
+      throw namespaceConfigError(`Cannot read ${packagePath}.`, cause);
+    }
+  }
+
+  throw namespaceConfigError(
+    'namespace is required when Queuebit cannot find a package.json with a name. Set namespace or QUEUEBIT_NAMESPACE.'
+  );
+}
+
+function namespaceFromPackageName(packageName: string): string {
+  const readableName = packageName
+    .replace(/[^A-Za-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 111) || 'package';
+  const digest = createHash('sha256').update(packageName).digest('hex').slice(0, 12);
+  return assertNamespace(`app:${readableName}:${digest}`, 'package.json name');
+}
+
+function assertNamespace(value: string, source: string): string {
+  if (/^[A-Za-z0-9][A-Za-z0-9:_-]{0,127}$/.test(value)) return value;
+  throw namespaceConfigError(
+    `${source} must be 1 to 128 characters using letters, digits, colon, underscore, or hyphen.`
+  );
+}
+
+function isMissingFileError(cause: unknown): cause is NodeJS.ErrnoException {
+  return typeof cause === 'object' && cause !== null && 'code' in cause && cause.code === 'ENOENT';
+}
+
+function namespaceConfigError(message: string, cause?: unknown): QueuebitError {
+  return new QueuebitError({
+    code: 'QB_CONFIG_INVALID',
+    message,
+    ...(cause === undefined ? {} : { details: { cause } })
+  });
 }
 
 function assertWatermarks(config: QueuebitConfig) {

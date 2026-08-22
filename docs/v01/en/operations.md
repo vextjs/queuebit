@@ -125,4 +125,4 @@ npx queuebit worker drain --queue notification --worker-id worker-a --reason rol
 npx queuebit coordinator drain --coordinator-id coordinator-a --reason rolling-release --config queuebit.config.ts
 ```
 
-Remote drain commands only tell the target process to prepare for shutdown; they do not wait until it has fully stopped. On SIGTERM, Worker stops claiming new jobs, Coordinator stops reading sources and dispatching new batches, and both wait for the current Redis atomic operation to finish. The process uses its configured `--drain-timeout-ms` during shutdown. On timeout, it stops renewing and exits non-zero without inventing a business success or failure state.
+Remote drain commands only tell the target process to prepare for shutdown; they do not wait until it has fully stopped. An SDK service host calls `worker.drain()`, `coordinator.drain()`, or `queuebit.close()` from its own shutdown lifecycle; Queuebit does not install a signal handler. Only the optional CLI role host drains automatically on SIGTERM. Each host uses its configured drain timeout. On timeout, it stops renewing and reports failure without inventing a business success or failure state.

@@ -1,4 +1,5 @@
 export {
+  createQueuebitRuntimeProcessor,
   defineQueuebitCompletionHandler,
   defineQueuebitMapper,
   defineQueuebitProcessor,
